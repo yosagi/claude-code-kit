@@ -1,0 +1,17 @@
+#!/bin/bash
+# claude-code launcher with osc-tap logging
+#
+# osc-tap 経由で claude を起動し、OSC シーケンスをキャプチャする。
+# セッションログのエクスポートやタイトル取得に利用される。
+#
+# ログ出力先: ~/.claude/osc-logs/
+
+LOG_DIR="${HOME}/.claude/osc-logs"
+
+exec osc-tap \
+    --output "$LOG_DIR" \
+    --matcher TITLE '0;(.*)' \
+    --matcher TRANSCRIPT '10321;TRANSCRIPT=(.*)' \
+    --matcher CWD '10321;CWD=(.*)' \
+    --matcher SESSION_ID '10321;SESSION_ID=(.*)' \
+    -- claude "$@"

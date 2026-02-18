@@ -423,6 +423,7 @@
 @reports/memory/work_history.md
 @reports/memory/user_profile.md
 @reports/personas/[呼び名].md
+@~/.claude/user_profile.md
 ```
 
 ---

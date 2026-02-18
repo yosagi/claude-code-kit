@@ -10,6 +10,7 @@ CLAUDE_DIR="$HOME/.claude"
 SETTINGS_FILE="$CLAUDE_DIR/settings.json"
 HOOKS_DIR="$CLAUDE_DIR/hooks"
 SKILLS_DIR="$CLAUDE_DIR/skills"
+BIN_DIR="$HOME/.local/bin"
 SESSION_LOG_DIR="$HOME/Notes/journals/claude_sessions"
 
 # 色付き出力
@@ -40,6 +41,7 @@ Options:
   - SessionEnd hook (セッション終了時のログエクスポート)
   - Status Line (コンテキスト残量表示)
   - 許可設定 (記憶ファイルへのアクセス許可)
+  - claude-code ラッパー (osc-tap 経由の起動スクリプト、osc-tap 必須)
 
 EOF
 }
@@ -56,6 +58,13 @@ check_dependencies() {
     # ccexport は警告のみ（なくても基本機能は動く）
     if ! command -v ccexport >/dev/null 2>&1; then
         warn "ccexport が見つかりません。セッションログエクスポート機能は動作しません。"
+        warn "  pipx install git+https://github.com/yosagi/ccexport.git"
+    fi
+
+    # osc-tap は警告のみ（なくてもインストールは進む）
+    if ! command -v osc-tap >/dev/null 2>&1; then
+        warn "osc-tap が見つかりません。claude-code ラッパーはインストールされません。"
+        warn "  pipx install git+https://github.com/yosagi/osc-tap.git"
     fi
 }
 
@@ -90,7 +99,17 @@ do_install() {
     cp "$SCRIPT_DIR/.claude/statusline.sh" "$CLAUDE_DIR/"
     chmod +x "$CLAUDE_DIR/statusline.sh"
 
-    # 4. settings.json を編集
+    # 4. claude-code ラッパーをインストール（osc-tap がある場合のみ）
+    if command -v osc-tap >/dev/null 2>&1; then
+        info "claude-code ラッパーをインストール中..."
+        mkdir -p "$BIN_DIR"
+        cp "$SCRIPT_DIR/scripts/claude-code" "$BIN_DIR/"
+        chmod +x "$BIN_DIR/claude-code"
+    else
+        warn "osc-tap 未インストールのため claude-code ラッパーはスキップしました"
+    fi
+
+    # 5. settings.json を編集
     info "settings.json を編集中..."
 
     if [[ ! -f "$SETTINGS_FILE" ]]; then
@@ -175,6 +194,12 @@ do_uninstall() {
         rm "$CLAUDE_DIR/statusline.sh"
     fi
 
+    # claude-code ラッパーを削除
+    if [[ -f "$BIN_DIR/claude-code" ]]; then
+        info "claude-code ラッパーを削除中..."
+        rm "$BIN_DIR/claude-code"
+    fi
+
     # settings.json から関連設定を削除
     if [[ -f "$SETTINGS_FILE" ]]; then
         info "settings.json を編集中..."
@@ -225,6 +250,15 @@ do_status() {
         echo "  ✗ statusline.sh (未インストール)"
     fi
 
+    # claude-code ラッパー
+    echo ""
+    echo "claude-code ラッパー:"
+    if [[ -f "$BIN_DIR/claude-code" ]]; then
+        echo "  ✓ $BIN_DIR/claude-code"
+    else
+        echo "  ✗ claude-code (未インストール)"
+    fi
+
     # settings.json
     echo ""
     echo "settings.json:"
@@ -257,6 +291,11 @@ do_status() {
         echo "  ✓ ccexport: $(which ccexport)"
     else
         echo "  ✗ ccexport: 未インストール (セッションログエクスポート不可)"
+    fi
+    if command -v osc-tap >/dev/null 2>&1; then
+        echo "  ✓ osc-tap: $(which osc-tap)"
+    else
+        echo "  ✗ osc-tap: 未インストール (claude-code ラッパー不可)"
     fi
 
     # sessions ディレクトリ

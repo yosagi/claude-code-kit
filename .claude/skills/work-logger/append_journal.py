@@ -87,7 +87,7 @@ def append_entry(journal_path: Path, project: str, entry: str) -> None:
     # ファイルが存在しない場合は新規作成
     if not journal_path.exists():
         journal_path.parent.mkdir(parents=True, exist_ok=True)
-        content = f"* Claude 作業ログ\n** {project}\n{entry}\n"
+        content = f"#+OPTIONS: ^:{{}}\n* Claude 作業ログ\n** {project}\n{entry}\n"
         journal_path.write_text(content)
         return
 
@@ -99,9 +99,16 @@ def append_entry(journal_path: Path, project: str, entry: str) -> None:
     log_section_idx = find_section(parsed, 1, "Claude 作業ログ")
 
     if log_section_idx is None:
-        # 作業ログセクションがない → ファイル先頭に追加
-        new_content = f"* Claude 作業ログ\n** {project}\n{entry}\n\n{content}"
-        journal_path.write_text(new_content)
+        # 作業ログセクションがない → ヘッダ行(#+)の後に追加
+        lines = content.split('\n')
+        insert_pos = 0
+        for i, line in enumerate(lines):
+            if line.startswith('#+'):
+                insert_pos = i + 1
+            else:
+                break
+        new_lines = lines[:insert_pos] + [f"* Claude 作業ログ\n** {project}\n{entry}\n"] + lines[insert_pos:]
+        journal_path.write_text('\n'.join(new_lines))
         return
 
     # "** プロジェクト名" を探す（作業ログセクション内で）

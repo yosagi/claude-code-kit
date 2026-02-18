@@ -42,6 +42,8 @@ dist/
 ├── reports/
 │   ├── inbox/                  # [ローカル] プロジェクト間連携受信箱
 │   └── next_session.md         # [ローカル] セッション引き継ぎ
+├── scripts/
+│   └── claude-code              # [グローバル] osc-tap 経由の起動ラッパー → ~/.local/bin/
 ├── CLAUDE.md                   # [ローカル] ワークフロー定義
 ├── CLAUDE.local.md             # [ローカル] 人格セットアップ用
 ├── install-skill.sh            # スキルインストーラー（個別追加用）
@@ -69,6 +71,7 @@ dist/setup_global.sh --install
 - SessionEnd hook（セッション終了時のログエクスポート）
 - Status Line（コンテキスト残量表示）
 - 許可設定（記憶ファイルへのアクセス許可）
+- claude-code ラッパー（osc-tap 経由の起動スクリプト、`~/.local/bin/claude-code`。osc-tap 未インストール時はスキップ）
 
 セッションログは `~/Notes/journals/claude_sessions/` に出力されます。
 変更したい場合は `~/.claude/hooks/session_end.sh` の `SESSION_LOG_DIR` を編集してください。
