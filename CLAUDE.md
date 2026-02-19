@@ -244,8 +244,8 @@ YYYY-MM-DD
 他プロジェクトからの依頼を `reports/inbox/` で受け取る。
 
 - セッション開始時に INDEX.md を確認し、`[NEW]` マーカーがあれば新着依頼
-- 依頼の送信・既読化・完了処理には `/inbox` スキルを使用
-  - `/inbox send` - 依頼を送信
+- 依頼の送信には `/inbox-send` スキルを使用
+- 受信した依頼の確認・完了処理には `/inbox` スキルを使用
   - `/inbox read` - 既読化 + 内容表示
   - `/inbox done` - 完了（done/ に移動）
 

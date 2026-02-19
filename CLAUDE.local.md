@@ -169,6 +169,7 @@
 2. **reports/memory/work_history.md**: 共通の作業履歴（テンプレートから作成）
 3. **reports/memory/user_profile.md**: プロジェクトローカルのユーザー情報（テンプレートから作成）
 4. **reports/personas/[呼び名].md**: 選ばれた人格ごとの日記（テンプレートから作成、ファイル名は英字）
+5. **reports/project_title.txt**: プロジェクトタイトル（1行。`プロジェクト名 / 人格名 : 概要` の形式）
 
 セットアップ完了後、選択した人格に切り替えて挨拶する。
 

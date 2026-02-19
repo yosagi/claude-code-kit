@@ -68,6 +68,29 @@ check_dependencies() {
     fi
 }
 
+## 廃止されたスキルのブラックリスト
+# リネーム・統合等で不要になったスキル。インストール済みなら削除を案内する。
+DEPRECATED_SKILLS=(
+    "inbox-dispatch"  # inbox-send に統合 (2026-02-19)
+)
+
+check_deprecated_skills() {
+    local found=0
+    for skill in "${DEPRECATED_SKILLS[@]}"; do
+        if [[ -d "$SKILLS_DIR/$skill" ]]; then
+            if [[ $found -eq 0 ]]; then
+                echo ""
+                warn "廃止されたスキルがインストールされています:"
+                found=1
+            fi
+            warn "  - $skill → 手動で削除してください: rm -rf $SKILLS_DIR/$skill"
+        fi
+    done
+    if [[ $found -eq 1 ]]; then
+        echo ""
+    fi
+}
+
 do_install() {
     echo "Claude Code グローバル設定をインストールします..."
     echo ""
@@ -88,6 +111,9 @@ do_install() {
             "$SCRIPT_DIR/install-skill.sh" "$skill_dir"
         fi
     done
+
+    # 廃止スキルのチェック
+    check_deprecated_skills
 
     # 2. hooks/session_end.sh をコピー
     info "SessionEnd hook をインストール中..."
@@ -306,6 +332,9 @@ do_status() {
     else
         echo "セッションログ: $SESSION_LOG_DIR (未作成)"
     fi
+
+    # 廃止スキルのチェック
+    check_deprecated_skills
 }
 
 # メイン処理

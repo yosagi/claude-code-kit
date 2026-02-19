@@ -1,6 +1,6 @@
 #!/bin/bash
 # 目的: 受信側プロジェクトで claude -p を起動して inbox 依頼を自動処理
-# 関連: inbox-dispatch SKILL.md, inbox-process SKILL.md
+# 関連: inbox-send SKILL.md, inbox-process SKILL.md
 # 前提: 依頼ファイルが既に送信済みであること
 
 set -e

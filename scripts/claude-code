@@ -4,7 +4,14 @@
 # osc-tap 経由で claude を起動し、OSC シーケンスをキャプチャする。
 # セッションログのエクスポートやタイトル取得に利用される。
 #
+# 起動時に reports/project_title.txt があれば表示する。
 # ログ出力先: ~/.claude/osc-logs/
+
+# プロジェクトタイトルの表示
+TITLE_FILE="reports/project_title.txt"
+if [[ -f "$TITLE_FILE" ]]; then
+    printf '\033[36m%s\033[0m\n' "$(cat "$TITLE_FILE")"
+fi
 
 LOG_DIR="${HOME}/.claude/osc-logs"
 
