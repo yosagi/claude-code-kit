@@ -45,11 +45,22 @@ fi
 COST=$(echo "$input" | jq -r '.cost.total_cost_usd // 0')
 COST_FMT=$(printf "%.2f" "$COST")
 
+# inbox NEW 件数
+INBOX_INDEX="$PROJECT_DIR/reports/inbox/INDEX.md"
+INBOX_NEW=0
+if [ -f "$INBOX_INDEX" ]; then
+    INBOX_NEW=$(grep -c '\[NEW\]' "$INBOX_INDEX" 2>/dev/null || echo 0)
+fi
+INBOX_FMT=""
+if [ "$INBOX_NEW" -gt 0 ] 2>/dev/null; then
+    INBOX_FMT=" | \033[33m📬 ${INBOX_NEW}\033[0m"
+fi
+
 # 出力（cwd があれば表示）
 if [ -n "$REL_CWD" ]; then
-    echo -e "[$MODEL] $PROJECT_NAME/$REL_CWD | Context: ${PERCENT_USED}% (Left: $LEFT_FMT) | \$${COST_FMT}"
+    echo -e "[$MODEL] $PROJECT_NAME/$REL_CWD | Context: ${PERCENT_USED}% (Left: $LEFT_FMT) | \$${COST_FMT}${INBOX_FMT}"
 else
-    echo -e "[$MODEL] $PROJECT_NAME | Context: ${PERCENT_USED}% (Left: $LEFT_FMT) | \$${COST_FMT}"
+    echo -e "[$MODEL] $PROJECT_NAME | Context: ${PERCENT_USED}% (Left: $LEFT_FMT) | \$${COST_FMT}${INBOX_FMT}"
 fi
 
 # wezterm User Variable を設定（キーマップ制御用）
