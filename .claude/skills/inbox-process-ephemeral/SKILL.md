@@ -2,7 +2,7 @@
 name: inbox-process-ephemeral
 description: inbox に届いた依頼を処理する（自動実行用・記録なし軽量版）
 user_invocable: true
-allowed-tools: Bash(~/.claude/skills/inbox/inbox.sh:*)
+allowed-tools: Bash(~/.claude/skills/inbox/inbox-read.sh:*), Bash(~/.claude/skills/inbox-send/inbox-send.sh:*)
 ---
 
 # あなたのタスク: 指定された inbox 依頼を処理する（軽量版）
@@ -18,7 +18,7 @@ allowed-tools: Bash(~/.claude/skills/inbox/inbox.sh:*)
 ### 1. 依頼を読む
 
 ```bash
-~/.claude/skills/inbox/inbox.sh read [指定されたファイル名]
+~/.claude/skills/inbox/inbox-read.sh read [指定されたファイル名]
 ```
 
 これにより依頼内容が表示され、INDEX.md の `[NEW]` マーカーが削除されます。
@@ -32,7 +32,7 @@ allowed-tools: Bash(~/.claude/skills/inbox/inbox.sh:*)
 作業が終わったら（成功・失敗に関わらず）：
 
 ```bash
-~/.claude/skills/inbox/inbox.sh done [ファイル名]
+~/.claude/skills/inbox/inbox-read.sh done [ファイル名]
 ```
 
 これにより依頼ファイルが `done/` に移動し、INDEX.md から削除されます。
@@ -42,7 +42,7 @@ allowed-tools: Bash(~/.claude/skills/inbox/inbox.sh:*)
 依頼に「報告先」が記載されている場合、**成功・失敗に関わらず**結果を送信元に返します。
 
 ```bash
-~/.claude/skills/inbox/inbox.sh sendto [報告先プロジェクトルート] [draft ファイル] [送信元名] [日付]
+~/.claude/skills/inbox-send/inbox-send.sh [報告先プロジェクトルート] [draft ファイル] [送信元名] [日付]
 ```
 
 **注意**: 報告先はプロジェクトルート（例: `~/work/myproject`）を指定する。
