@@ -146,17 +146,17 @@ do_install() {
     local permissions='[
         "Read(reports/memory/**)",
         "Read(reports/personas/**)",
-        "Read(reports/next_session.md)",
+        "Read(work_in_progress.md)",
         "Read(reports/ideas/**)",
         "Read(reports/todos/**)",
         "Edit(reports/memory/**)",
         "Edit(reports/personas/**)",
-        "Edit(reports/next_session.md)",
+        "Edit(work_in_progress.md)",
         "Edit(reports/ideas/**)",
         "Edit(reports/todos/**)",
         "Write(reports/memory/**)",
         "Write(reports/personas/**)",
-        "Write(reports/next_session.md)",
+        "Write(work_in_progress.md)",
         "Write(reports/ideas/**)",
         "Write(reports/todos/**)"
     ]'

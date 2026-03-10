@@ -50,14 +50,12 @@ if [[ -f "$history_file" ]]; then
     fi
 fi
 
-# 超過があれば通知
+# 超過があれば JSON で通知（PostToolUse は additionalContext でないと AI に届かない）
 if (( ${#exceeded[@]} > 0 )); then
-    echo ""
-    echo "---"
-    echo "記憶ファイルが上限を超えています:"
+    msg="記憶ファイルが上限を超えています:"
     for item in "${exceeded[@]}"; do
-        echo "  - $item"
+        msg="$msg\n  - $item"
     done
-    echo "/memory-compact を実行して古いエントリを要約・圧縮してください。"
-    echo "---"
+    msg="$msg\n/memory-compact を実行して古いエントリを要約・圧縮してください。"
+    jq -n --arg ctx "$msg" '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $ctx}}'
 fi

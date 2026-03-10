@@ -49,18 +49,37 @@ COST_FMT=$(printf "%.2f" "$COST")
 INBOX_INDEX="$PROJECT_DIR/reports/inbox/INDEX.md"
 INBOX_NEW=0
 if [ -f "$INBOX_INDEX" ]; then
-    INBOX_NEW=$(grep -c '\[NEW\]' "$INBOX_INDEX" 2>/dev/null || echo 0)
+    INBOX_NEW=$(grep -c '\[NEW\]' "$INBOX_INDEX" 2>/dev/null)
+    INBOX_NEW=${INBOX_NEW:-0}
 fi
 INBOX_FMT=""
 if [ "$INBOX_NEW" -gt 0 ] 2>/dev/null; then
     INBOX_FMT=" | \033[33m📬 ${INBOX_NEW}\033[0m"
 fi
 
+# IDEAS / TODO 件数
+IDEAS_INDEX="$PROJECT_DIR/reports/ideas/INDEX.md"
+TODOS_INDEX="$PROJECT_DIR/reports/todos/INDEX.md"
+IDEAS_COUNT=0
+TODOS_COUNT=0
+if [ -f "$IDEAS_INDEX" ]; then
+    IDEAS_COUNT=$(grep -c '^- [0-9]\{4\}-' "$IDEAS_INDEX" 2>/dev/null)
+    IDEAS_COUNT=${IDEAS_COUNT:-0}
+fi
+if [ -f "$TODOS_INDEX" ]; then
+    TODOS_COUNT=$(grep -c '^- [0-9]\{4\}-' "$TODOS_INDEX" 2>/dev/null)
+    TODOS_COUNT=${TODOS_COUNT:-0}
+fi
+ITEMS_FMT=""
+if [ "$IDEAS_COUNT" -gt 0 ] 2>/dev/null || [ "$TODOS_COUNT" -gt 0 ] 2>/dev/null; then
+    ITEMS_FMT=" | 💡${IDEAS_COUNT} 📋${TODOS_COUNT}"
+fi
+
 # 出力（cwd があれば表示）
 if [ -n "$REL_CWD" ]; then
-    echo -e "[$MODEL] $PROJECT_NAME/$REL_CWD | Context: ${PERCENT_USED}% (Left: $LEFT_FMT) | \$${COST_FMT}${INBOX_FMT}"
+    echo -e "[$MODEL] $PROJECT_NAME/$REL_CWD | Context: ${PERCENT_USED}% (Left: $LEFT_FMT) | \$${COST_FMT}${INBOX_FMT}${ITEMS_FMT}"
 else
-    echo -e "[$MODEL] $PROJECT_NAME | Context: ${PERCENT_USED}% (Left: $LEFT_FMT) | \$${COST_FMT}${INBOX_FMT}"
+    echo -e "[$MODEL] $PROJECT_NAME | Context: ${PERCENT_USED}% (Left: $LEFT_FMT) | \$${COST_FMT}${INBOX_FMT}${ITEMS_FMT}"
 fi
 
 # wezterm User Variable を設定（キーマップ制御用）

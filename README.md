@@ -41,8 +41,8 @@ dist/
 │   └── export_session          # [ローカル] opt-in フラグ（テンプレート）
 ├── reports/
 │   ├── inbox/                  # [ローカル] プロジェクト間連携受信箱
-│   ├── next_session.md         # [ローカル] セッション引き継ぎ
 │   └── project_title.txt      # [ローカル] プロジェクトタイトル（起動時表示）
+├── work_in_progress.md         # [ローカル] 進行中の作業状態
 ├── scripts/
 │   └── claude-code              # [グローバル] osc-tap 経由の起動ラッパー → ~/.local/bin/
 ├── CLAUDE.md                   # [ローカル] ワークフロー定義
@@ -115,7 +115,7 @@ reports/
 │   └── [人格名].md        # 日記
 ├── tasks/                 # 実装ログ
 │   └── YYYY-MM-DD_task_[topic].md
-└── next_session.md        # セッション引き継ぎ
+work_in_progress.md        # 進行中の作業状態（プロジェクトルート直下）
 ```
 
 </details>
