@@ -95,6 +95,13 @@ do_install() {
     echo "Claude Code グローバル設定をインストールします..."
     echo ""
 
+    # settings.json のバックアップ
+    if [[ -f "$SETTINGS_FILE" ]]; then
+        local backup="${SETTINGS_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
+        cp "$SETTINGS_FILE" "$backup"
+        info "settings.json をバックアップ: $backup"
+    fi
+
     # 依存関係チェック
     check_dependencies || exit 1
 
@@ -115,10 +122,14 @@ do_install() {
     # 廃止スキルのチェック
     check_deprecated_skills
 
-    # 2. hooks/session_end.sh をコピー
+    # 2. hooks をコピー
     info "SessionEnd hook をインストール中..."
     cp "$SCRIPT_DIR/.claude/hooks/session_end.sh" "$HOOKS_DIR/"
     chmod +x "$HOOKS_DIR/session_end.sh"
+
+    info "SessionStart hook をインストール中..."
+    cp "$SCRIPT_DIR/.claude/hooks/session_start.sh" "$HOOKS_DIR/"
+    chmod +x "$HOOKS_DIR/session_start.sh"
 
     # 3. statusline.sh をコピー
     info "Status Line をインストール中..."
@@ -158,27 +169,30 @@ do_install() {
         "Write(reports/personas/**)",
         "Write(work_in_progress.md)",
         "Write(reports/ideas/**)",
-        "Write(reports/todos/**)"
+        "Write(reports/todos/**)",
+        "Read(reports/insight/**)",
+        "Edit(reports/insight/**)",
+        "Write(reports/insight/**)"
     ]'
 
     # settings.json を更新
     local tmp=$(mktemp)
     jq --argjson perms "$permissions" \
-       --arg hook_cmd "$HOOKS_DIR/session_end.sh" \
+       --arg hook_end_cmd "$HOOKS_DIR/session_end.sh" \
+       --arg hook_start_cmd "$HOOKS_DIR/session_start.sh" \
        --arg statusline_cmd "$CLAUDE_DIR/statusline.sh" '
         # 許可設定をマージ
         .permissions.allow = ((.permissions.allow // []) + $perms | unique) |
-        # SessionEnd hook を設定
-        .hooks.SessionEnd = [
-            {
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": $hook_cmd
-                    }
-                ]
-            }
-        ] |
+        # SessionEnd hook をマージ（既存エントリを保持、自分の hook は追加/更新）
+        .hooks.SessionEnd = (
+            [.hooks.SessionEnd // [] | .[] | select(.hooks[0].command != $hook_end_cmd)] +
+            [{"hooks": [{"type": "command", "command": $hook_end_cmd}]}]
+        ) |
+        # SessionStart hook をマージ（既存エントリを保持、自分の hook は追加/更新）
+        .hooks.SessionStart = (
+            [.hooks.SessionStart // [] | .[] | select(.hooks[0].command != $hook_start_cmd)] +
+            [{"hooks": [{"type": "command", "command": $hook_start_cmd}]}]
+        ) |
         # Status Line を設定
         .statusLine = {
             "type": "command",
@@ -208,10 +222,14 @@ do_uninstall() {
         fi
     done
 
-    # hooks/session_end.sh を削除
+    # hooks を削除
     if [[ -f "$HOOKS_DIR/session_end.sh" ]]; then
         info "SessionEnd hook を削除中..."
         rm "$HOOKS_DIR/session_end.sh"
+    fi
+    if [[ -f "$HOOKS_DIR/session_start.sh" ]]; then
+        info "SessionStart hook を削除中..."
+        rm "$HOOKS_DIR/session_start.sh"
     fi
 
     # statusline.sh を削除
@@ -232,6 +250,7 @@ do_uninstall() {
         local tmp=$(mktemp)
         jq '
             del(.hooks.SessionEnd) |
+            del(.hooks.SessionStart) |
             del(.statusLine) |
             if .hooks == {} then del(.hooks) else . end
         ' "$SETTINGS_FILE" > "$tmp" && mv "$tmp" "$SETTINGS_FILE"
@@ -265,6 +284,11 @@ do_status() {
         echo "  ✓ session_end.sh"
     else
         echo "  ✗ session_end.sh (未インストール)"
+    fi
+    if [[ -f "$HOOKS_DIR/session_start.sh" ]]; then
+        echo "  ✓ session_start.sh"
+    else
+        echo "  ✗ session_start.sh (未インストール)"
     fi
 
     # statusline

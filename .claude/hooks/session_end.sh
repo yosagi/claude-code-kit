@@ -9,6 +9,7 @@ SCRIPT_NAME="session_end.sh"
 HOOKS_DIR="$HOME/.claude/hooks"
 SETTINGS_FILE="$HOME/.claude/settings.json"
 SESSION_LOG_DIR="$HOME/Notes/journals/claude_sessions"
+REGISTRY_BASE="$HOME/Notes/claude-registry"
 
 show_help() {
     cat << EOF
@@ -227,6 +228,101 @@ do_prepare() {
     echo "$output_file"
 }
 
+# プロジェクトパスから registry のディレクトリ名を生成
+# $HOME を省略し、/ → -, . → - で変換（session_start.sh と同じロジック）
+path_to_dirname() {
+    local path="$1"
+    echo "${path#$HOME/}" | sed 's|/|-|g; s|\.|-|g'
+}
+
+# ダイジェスト JSON を registry/sessions/ に書き出す
+write_session_digest() {
+    local session_id="$1"
+    local project_dir="$2"
+    local digest_file="$project_dir/reports/memory/work-logger-${session_id}_digest.txt"
+
+    # digest ファイルがなければ何もしない
+    if [[ ! -f "$digest_file" ]]; then
+        return 0
+    fi
+
+    local digest
+    digest=$(cat "$digest_file")
+    rm -f "$digest_file"
+
+    # 空なら書き出さない
+    if [[ -z "$digest" ]]; then
+        return 0
+    fi
+
+    # ccexport session-info --verbose で start/end を取得
+    local session_info
+    if ! session_info=$(ccexport session-info -s "$session_id" --json --verbose 2>/dev/null); then
+        # session-info が失敗した場合は start/end なしで書き出す
+        session_info=""
+    fi
+
+    local project_name
+    project_name=$(basename "$project_dir")
+
+    local start_time end_time
+    if [[ -n "$session_info" ]]; then
+        start_time=$(echo "$session_info" | jq -r '.start_time // empty')
+        end_time=$(echo "$session_info" | jq -r '.end_time // empty')
+    fi
+
+    # registry のパスを構築
+    local hostname
+    hostname=$(hostname)
+    local dir_name
+    dir_name=$(path_to_dirname "$project_dir")
+    local sessions_dir="$REGISTRY_BASE/$hostname/$dir_name/sessions"
+
+    mkdir -p "$sessions_dir"
+
+    # JSON を書き出す
+    local json_file="$sessions_dir/${session_id}_meta.json"
+    jq -n \
+        --arg sid "$session_id" \
+        --arg proj "$project_name" \
+        --arg start "${start_time:-}" \
+        --arg end_time "${end_time:-}" \
+        --arg digest "$digest" \
+        '{
+            session_id: $sid,
+            project: $proj,
+            digest: $digest
+        }
+        + (if $start != "" then {start: $start} else {} end)
+        + (if $end_time != "" then {"end": $end_time} else {} end)
+        ' > "$json_file"
+}
+
+# 会話ログ JSON を registry/sessions/ に書き出す
+write_session_log() {
+    local session_id="$1"
+    local project_dir="$2"
+
+    # registry のパスを構築
+    local hostname
+    hostname=$(hostname)
+    local dir_name
+    dir_name=$(path_to_dirname "$project_dir")
+    local sessions_dir="$REGISTRY_BASE/$hostname/$dir_name/sessions"
+
+    mkdir -p "$sessions_dir"
+
+    local log_file="$sessions_dir/${session_id}_log.json"
+
+    # 既に存在すればスキップ
+    if [[ -f "$log_file" ]]; then
+        return 0
+    fi
+
+    # ccexport で JSON 形式でエクスポート
+    ccexport export -s "$session_id" -o "$log_file" -f json 2>/dev/null || true
+}
+
 resolve_project_dir() {
     # プロジェクトルートを取得する
     # hook 実行時は CLAUDE_PROJECT_DIR が設定され、session_id も必ず得られる
@@ -275,9 +371,14 @@ run_hook() {
         exit 0
     fi
 
-    # opt-in チェック: .claude/export_session がなければスキップ
+    # ダイジェスト JSON を registry に書き出す（opt-in 不要）
+    write_session_digest "$session_id" "$project_dir"
+
+    # 会話ログ JSON を registry に書き出す（opt-in 不要）
+    write_session_log "$session_id" "$project_dir"
+
+    # opt-in チェック: .claude/export_session がなければ org エクスポートはスキップ
     if [[ ! -f "$project_dir/.claude/export_session" ]]; then
-        # opt-in されていないプロジェクトはエクスポートしない
         exit 0
     fi
 

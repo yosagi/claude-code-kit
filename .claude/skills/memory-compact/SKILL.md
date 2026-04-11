@@ -20,7 +20,7 @@ user_invocable: true
 | ファイル | 上限 | アーカイブ先 |
 |----------|------|-------------|
 | reports/personas/*.md | 30件 | *_archive.md |
-| reports/memory/work_history.md | 25件 | work_history_archive.md |
+| reports/memory/work_history.md | 50件 | work_history_archive.md |
 
 ## 処理ルール
 

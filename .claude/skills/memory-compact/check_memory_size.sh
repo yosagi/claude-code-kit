@@ -3,7 +3,7 @@
 # Skill 使用後に発火し、上限超過時に memory-compact を促す
 
 LIMIT_DIARY=30
-LIMIT_HISTORY=25
+LIMIT_HISTORY=50
 
 # stdin から hook 入力を読む
 INPUT=$(cat)
