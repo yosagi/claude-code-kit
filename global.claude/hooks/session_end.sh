@@ -265,10 +265,13 @@ write_session_digest() {
     local project_name
     project_name=$(basename "$project_dir")
 
-    local start_time end_time
+    local start_time end_time turn_count total_duration_ms session_type
     if [[ -n "$session_info" ]]; then
         start_time=$(echo "$session_info" | jq -r '.start_time // empty')
         end_time=$(echo "$session_info" | jq -r '.end_time // empty')
+        turn_count=$(echo "$session_info" | jq -r '.turn_count // empty')
+        total_duration_ms=$(echo "$session_info" | jq -r '.total_duration_ms // empty')
+        session_type=$(echo "$session_info" | jq -r '.session_type // empty')
     fi
 
     # registry のパスを構築
@@ -287,14 +290,20 @@ write_session_digest() {
         --arg proj "$project_name" \
         --arg start "${start_time:-}" \
         --arg end_time "${end_time:-}" \
+        --arg turns "${turn_count:-}" \
+        --arg duration "${total_duration_ms:-}" \
+        --arg stype "${session_type:-}" \
         --arg digest "$digest" \
         '{
             session_id: $sid,
             project: $proj,
             digest: $digest
         }
+        + (if $stype != "" then {session_type: $stype} else {} end)
         + (if $start != "" then {start: $start} else {} end)
         + (if $end_time != "" then {"end": $end_time} else {} end)
+        + (if $turns != "" then {turns: ($turns | tonumber)} else {} end)
+        + (if $duration != "" and $duration != "null" then {total_duration_ms: ($duration | tonumber)} else {} end)
         ' > "$json_file"
 }
 
@@ -377,6 +386,21 @@ run_hook() {
     # 会話ログ JSON を registry に書き出す（opt-in 不要）
     write_session_log "$session_id" "$project_dir"
 
+    # ドラフトファイルがあれば journals に追記（追記許可ホストのみ）
+    local process_drafts_script
+    process_drafts_script="$(dirname "$0")/process_journal_drafts.sh"
+    if [[ -x "$process_drafts_script" ]]; then
+        "$process_drafts_script" || true
+    fi
+
+    # プロジェクト状態を registry にバックアップ（nohup+disown で切り離し）
+    local backup_script
+    backup_script="$(dirname "$0")/backup_project_state.sh"
+    if [[ -x "$backup_script" ]]; then
+        nohup "$backup_script" "$project_dir" "$session_id" >/dev/null 2>&1 &
+        disown
+    fi
+
     # opt-in チェック: .claude/export_session がなければ org エクスポートはスキップ
     if [[ ! -f "$project_dir/.claude/export_session" ]]; then
         exit 0
@@ -410,12 +434,12 @@ run_hook() {
     mkdir -p "$(dirname "$output_file")"
 
     # ccexport を実行（osc-tap ログがあればタイトルも含める）
-    if ccexport export -s "$session_id" -o "$output_file" -f org --titles-dir "$HOME/.claude/osc-logs/" 2>/dev/null; then
-        echo "会話ログをエクスポートしました: $output_file"
-    else
-        # エラーでも hook 全体は失敗させない（セッション終了を妨げない）
-        echo "警告: 会話ログのエクスポートに失敗しました" >&2
-    fi
+    # Note: SessionEnd hook はプロセス終了時に即座に kill される既知の問題があるため
+    # (https://github.com/anthropics/claude-code/issues/41577)
+    # nohup + disown でプロセスを切り離して実行する
+    nohup ccexport export -s "$session_id" -o "$output_file" -f org \
+        --titles-dir "$HOME/.claude/osc-logs/" >/dev/null 2>&1 &
+    disown
 }
 
 # メイン処理

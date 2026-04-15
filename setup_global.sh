@@ -12,6 +12,9 @@ HOOKS_DIR="$CLAUDE_DIR/hooks"
 SKILLS_DIR="$CLAUDE_DIR/skills"
 BIN_DIR="$HOME/.local/bin"
 SESSION_LOG_DIR="$HOME/Notes/journals/claude_sessions"
+REGISTRY_DIR="$HOME/Notes/claude-registry"
+GLOBAL_RULES_FILE="$REGISTRY_DIR/global_rules.md"
+GLOBAL_CLAUDE_MD="$CLAUDE_DIR/CLAUDE.md"
 
 # 色付き出力
 GREEN='\033[0;32m'
@@ -36,12 +39,13 @@ Options:
   --help        このヘルプを表示
 
 インストール内容:
-  - Skills (dist/.claude/skills/ 内の全スキル)
+  - Skills (dist/global.claude/skills/ 内の全スキル)
   - Sandbox 例外設定 (スクリプトを含むスキルの excludedCommands)
   - SessionEnd hook (セッション終了時のログエクスポート)
   - Status Line (コンテキスト残量表示)
   - 許可設定 (記憶ファイルへのアクセス許可)
   - claude-code ラッパー (osc-tap 経由の起動スクリプト、osc-tap 必須)
+  - グローバルルール (~/.claude/CLAUDE.md + registry/global_rules.md、初回のみ)
 
 EOF
 }
@@ -113,7 +117,7 @@ do_install() {
 
     # 1. Skills をインストール（install-skill.sh に委譲）
     info "Skills をインストール中..."
-    for skill_dir in "$SCRIPT_DIR/.claude/skills"/*/; do
+    for skill_dir in "$SCRIPT_DIR/global.claude/skills"/*/; do
         if [[ -d "$skill_dir" ]]; then
             "$SCRIPT_DIR/install-skill.sh" "$skill_dir"
         fi
@@ -124,16 +128,18 @@ do_install() {
 
     # 2. hooks をコピー
     info "SessionEnd hook をインストール中..."
-    cp "$SCRIPT_DIR/.claude/hooks/session_end.sh" "$HOOKS_DIR/"
+    cp "$SCRIPT_DIR/global.claude/hooks/session_end.sh" "$HOOKS_DIR/"
     chmod +x "$HOOKS_DIR/session_end.sh"
+    cp "$SCRIPT_DIR/global.claude/hooks/process_journal_drafts.sh" "$HOOKS_DIR/"
+    chmod +x "$HOOKS_DIR/process_journal_drafts.sh"
 
     info "SessionStart hook をインストール中..."
-    cp "$SCRIPT_DIR/.claude/hooks/session_start.sh" "$HOOKS_DIR/"
+    cp "$SCRIPT_DIR/global.claude/hooks/session_start.sh" "$HOOKS_DIR/"
     chmod +x "$HOOKS_DIR/session_start.sh"
 
     # 3. statusline.sh をコピー
     info "Status Line をインストール中..."
-    cp "$SCRIPT_DIR/.claude/statusline.sh" "$CLAUDE_DIR/"
+    cp "$SCRIPT_DIR/global.claude/statusline.sh" "$CLAUDE_DIR/"
     chmod +x "$CLAUDE_DIR/statusline.sh"
 
     # 4. claude-code ラッパーをインストール（osc-tap がある場合のみ）
@@ -146,7 +152,22 @@ do_install() {
         warn "osc-tap 未インストールのため claude-code ラッパーはスキップしました"
     fi
 
-    # 5. settings.json を編集
+    # 5. グローバルルールをインストール（存在しない場合のみ）
+    if [[ ! -f "$GLOBAL_RULES_FILE" ]]; then
+        info "グローバルルールを配置中..."
+        mkdir -p "$REGISTRY_DIR"
+        cp "$SCRIPT_DIR/global.claude/global_rules.md" "$GLOBAL_RULES_FILE"
+    else
+        info "グローバルルール: 既存ファイルを維持 ($GLOBAL_RULES_FILE)"
+    fi
+    if [[ ! -f "$GLOBAL_CLAUDE_MD" ]]; then
+        info "~/.claude/CLAUDE.md を作成中..."
+        echo "@$GLOBAL_RULES_FILE" > "$GLOBAL_CLAUDE_MD"
+    else
+        info "~/.claude/CLAUDE.md: 既存ファイルを維持"
+    fi
+
+    # 6. settings.json を編集
     info "settings.json を編集中..."
 
     if [[ ! -f "$SETTINGS_FILE" ]]; then
@@ -154,25 +175,30 @@ do_install() {
     fi
 
     # 許可設定
+    # パスは / prefix でプロジェクトルート相対（cwd がサブディレクトリでも有効）
     local permissions='[
-        "Read(reports/memory/**)",
-        "Read(reports/personas/**)",
-        "Read(work_in_progress.md)",
-        "Read(reports/ideas/**)",
-        "Read(reports/todos/**)",
-        "Edit(reports/memory/**)",
-        "Edit(reports/personas/**)",
-        "Edit(work_in_progress.md)",
-        "Edit(reports/ideas/**)",
-        "Edit(reports/todos/**)",
-        "Write(reports/memory/**)",
-        "Write(reports/personas/**)",
-        "Write(work_in_progress.md)",
-        "Write(reports/ideas/**)",
-        "Write(reports/todos/**)",
-        "Read(reports/insight/**)",
-        "Edit(reports/insight/**)",
-        "Write(reports/insight/**)"
+        "Read(/reports/memory/**)",
+        "Read(/reports/personas/**)",
+        "Read(/work_in_progress.md)",
+        "Read(/reports/ideas/**)",
+        "Read(/reports/todos/**)",
+        "Read(/reports/insight/**)",
+        "Read(/reports/jobs/**)",
+        "Read(~/work/*/reports/**)",
+        "Edit(/reports/memory/**)",
+        "Edit(/reports/personas/**)",
+        "Edit(/work_in_progress.md)",
+        "Edit(/reports/ideas/**)",
+        "Edit(/reports/todos/**)",
+        "Edit(/reports/insight/**)",
+        "Edit(/reports/jobs/**)",
+        "Write(/reports/memory/**)",
+        "Write(/reports/personas/**)",
+        "Write(/work_in_progress.md)",
+        "Write(/reports/ideas/**)",
+        "Write(/reports/todos/**)",
+        "Write(/reports/insight/**)",
+        "Write(/reports/jobs/**)"
     ]'
 
     # settings.json を更新
@@ -214,7 +240,7 @@ do_uninstall() {
 
     # Skills を削除
     info "Skills を削除中..."
-    for skill_dir in "$SCRIPT_DIR/.claude/skills"/*/; do
+    for skill_dir in "$SCRIPT_DIR/global.claude/skills"/*/; do
         skill=$(basename "$skill_dir")
         if [[ -d "$SKILLS_DIR/$skill" ]]; then
             rm -rf "$SKILLS_DIR/$skill"
@@ -226,6 +252,9 @@ do_uninstall() {
     if [[ -f "$HOOKS_DIR/session_end.sh" ]]; then
         info "SessionEnd hook を削除中..."
         rm "$HOOKS_DIR/session_end.sh"
+    fi
+    if [[ -f "$HOOKS_DIR/process_journal_drafts.sh" ]]; then
+        rm "$HOOKS_DIR/process_journal_drafts.sh"
     fi
     if [[ -f "$HOOKS_DIR/session_start.sh" ]]; then
         info "SessionStart hook を削除中..."
@@ -268,7 +297,7 @@ do_status() {
 
     # Skills
     echo "Skills:"
-    for skill_dir in "$SCRIPT_DIR/.claude/skills"/*/; do
+    for skill_dir in "$SCRIPT_DIR/global.claude/skills"/*/; do
         skill=$(basename "$skill_dir")
         if [[ -d "$SKILLS_DIR/$skill" ]]; then
             echo "  ✓ $skill"
@@ -327,6 +356,20 @@ do_status() {
         echo "  許可設定: $perm_count 件"
     else
         echo "  ✗ settings.json が存在しません"
+    fi
+
+    # グローバルルール
+    echo ""
+    echo "グローバルルール:"
+    if [[ -f "$GLOBAL_CLAUDE_MD" ]]; then
+        echo "  ✓ ~/.claude/CLAUDE.md"
+    else
+        echo "  ✗ ~/.claude/CLAUDE.md (未作成)"
+    fi
+    if [[ -f "$GLOBAL_RULES_FILE" ]]; then
+        echo "  ✓ $GLOBAL_RULES_FILE"
+    else
+        echo "  ✗ $GLOBAL_RULES_FILE (未作成)"
     fi
 
     # 依存関係

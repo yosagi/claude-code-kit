@@ -40,6 +40,7 @@
 - **personas/**: 人格設定と日記
 - **inbox/**: プロジェクト間連携の受信箱
 - **insight/**: 定期洞察レポート
+- **jobs/**: insight ローカルジョブ定義（ユーザー定義の分析タスク）
 
 ## 実装プロセス
 
@@ -292,6 +293,10 @@ YYYY-MM-DD
 - 生成後、inbox に通知が届く（`YYYY-MM-DD_from_insight.md`）
 - inbox の `[NEW]` マーカーと statusline の 📬 で未読が確認できる
 - 提案の処理には `/insight-review` スキルを使用
+- **ローカルジョブ**: `reports/jobs/` にジョブ定義ファイルを配置すると、insight 実行時に自動処理される
+  - `YYYY-MM-DD_every_name.md`: insight のたびに毎回実行
+  - `YYYY-MM-DD_once_name.md`: 1回実行したら `done/` に移動
+  - ジョブ定義には「対象」「観点」「出力」を記載する
 
 ## 記憶システム
 

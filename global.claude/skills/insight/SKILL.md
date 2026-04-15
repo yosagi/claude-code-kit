@@ -6,6 +6,7 @@ allowed-tools:
   - Skill(stocktake)
   - Skill(memory-compact)
   - Skill(notia-search)
+  - Bash(~/.claude/skills/inbox-send/inbox-send.sh:*)
 ---
 
 # あなたのタスク: プロジェクト洞察レポートの生成
@@ -30,10 +31,15 @@ Phase 1 に入る前に、前回 insight 以降に活動があったかを確認
 
 1. `reports/insight/` 内の既存 insight レポートから前回の日付を取得する
 2. `reports/memory/work_history.md` の最新エントリの日付と比較する
-3. **最新エントリの日付が前回 insight 以前であれば、活動なしと判断して終了する**
-   - 「前回 insight（YYYY-MM-DD）以降に新しい作業履歴がないため、スキップします。」と報告して終了
+3. `reports/jobs/` 内に `once_` ジョブがあるか確認する
+4. **続行条件**: 以下のいずれかを満たせば続行、どちらも満たさなければスキップ:
+   - `最新エントリ日 > 前回insight日`（新しい作業履歴がある）
+   - `once_` ジョブが存在する
+   - スキップ時: 「前回 insight（YYYY-MM-DD）以降に新しい作業履歴がないため、スキップします。」と報告して終了
 
 前回 insight レポートがない場合（初回実行）は、活動ありとして続行する。
+
+**注**: inbox の状態（`[NEW]` マーカーの有無）は Phase 0 の判定に含めない。
 
 ### Phase 1: 下請けスキルの実行
 
@@ -44,6 +50,39 @@ Skill ツールで `stocktake` を呼び出す。完了後、`reports/insight/la
 #### 1-2. /memory-compact を実行
 
 Skill ツールで `memory-compact` を呼び出す。圧縮が不要なら何もせず戻ってくる。
+
+### Phase 1.5: ローカルジョブの実行
+
+`reports/jobs/` ディレクトリが存在し、中にジョブ定義ファイル（`*.md`、`done/` 内は除く）があれば実行する。
+ジョブがなければこのフェーズをスキップする。
+
+#### 処理手順
+
+1. `reports/jobs/` 内の `*.md` ファイルを一覧する（`done/` ディレクトリは除外）
+2. 各ジョブ定義を読み、ファイル名のプレフィックスから種別を判別する:
+   - `every_`: insight のたびに毎回実行する定期ジョブ
+   - `once_`: 1回だけ実行する単発ジョブ
+3. 各ジョブの「対象」「観点」に従って情報収集・分析を実行する
+4. 結果をジョブごとにメモしておく（Phase 3 でレポートに統合する）
+5. `once_` ジョブは実行完了後、`reports/jobs/done/` に移動する（日付を完了日に更新）
+
+#### ジョブ定義ファイルの形式
+
+```markdown
+# ジョブ: [タイトル]
+
+## 対象
+何を見るか（ファイルパス、コードベースの範囲など）
+
+## 観点
+何を探すか（分析の視点、チェック項目）
+
+## 出力
+どうまとめるか（提案リスト、一覧表、振り分け案など）
+
+## 備考
+補足情報（任意）
+```
 
 ### Phase 2: 情報収集
 
@@ -101,7 +140,11 @@ notia-search に以下の趣旨で検索を依頼する:
 - TODO/IDEAS に影響しうる他プロジェクトの進展
 - inbox で送るべき連絡の提案
 
-#### 3-4. 提案
+#### 3-4. ローカルジョブの結果（ジョブがあった場合のみ）
+
+Phase 1.5 で実行したジョブの結果をまとめる。各ジョブの「出力」の指示に従って整理する。
+
+#### 3-5. 提案
 
 各発見に基づくアクション候補を整理する:
 - done/ に移動すべき項目（棚卸しの確認結果を踏まえて）
@@ -156,6 +199,11 @@ notia-search に以下の趣旨で検索を依頼する:
 ### inbox 送信候補
 - → [宛先プロジェクト]: [内容の要約]
 
+## ローカルジョブ
+
+### [ジョブタイトル]（every / once）
+[ジョブの出力指示に従った結果]
+
 ## 提案一覧
 
 優先度順に整理:
@@ -166,11 +214,13 @@ notia-search に以下の趣旨で検索を依頼する:
 
 #### 4-2. inbox に通知を送る
 
-自プロジェクトの inbox に通知ファイルを作成する。
+inbox-send.sh で自プロジェクトに通知を送る。Write/Edit で直接 inbox を編集してはならない（sandbox 制約で失敗する）。
 
-ファイル名: `reports/inbox/YYYY-MM-DD_from_insight.md`
+1. draft ファイルを作成（`reports/inbox/draft/to_self_insight.md`）:
 
 ```markdown
+送信先: [自プロジェクトのルートパス]
+
 # insight レポート通知
 
 新しい洞察レポートが生成されました。
@@ -181,11 +231,13 @@ notia-search に以下の趣旨で検索を依頼する:
 確認するには `/insight-review YYYY-MM-DD_from_insight.md` を実行してください。
 ```
 
-INDEX.md に `[NEW]` マーカー付きで追加:
+2. 送信:
 
+```bash
+~/.claude/skills/inbox-send/inbox-send.sh [自プロジェクトのルートパス] reports/inbox/draft/to_self_insight.md insight $(date +%Y-%m-%d)
 ```
-- [NEW] YYYY-MM-DD_from_insight.md: insight レポート通知（YYYY-MM-DD）
-```
+
+dispatch は不要（自プロジェクトなので）。
 
 #### 4-3. 結果を報告
 

@@ -18,6 +18,7 @@ dirs=(
     reports/memory
     reports/personas
     reports/insight
+    reports/jobs/done
     reports/pub
 )
 for d in "${dirs[@]}"; do

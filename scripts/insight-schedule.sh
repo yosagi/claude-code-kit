@@ -124,7 +124,7 @@ WorkingDirectory=${project_path}
 ExecStart=${claude_cmd} -p "/insight"
 Environment=HOME=${HOME}
 # タイムアウト: insight は時間がかかる場合がある
-TimeoutStartSec=600
+TimeoutStartSec=1800
 SERVICEEOF
 
     # .timer ファイルを生成

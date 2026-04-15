@@ -108,6 +108,75 @@ register_project() {
     fi
 }
 
+# バックアップのマニフェストと現在のファイルを比較し、消失を検出する
+check_backup_integrity() {
+    local project_dir="$1"
+
+    # reports/ が symlink ならバックアップ対象外なのでチェックもスキップ
+    if [[ -L "$project_dir/reports" ]]; then
+        return 0
+    fi
+
+    local hostname
+    hostname=$(hostname)
+    local dir_name
+    dir_name=$(path_to_dirname "$project_dir")
+    local manifest="$REGISTRY_BASE/$hostname/$dir_name/states/.backup_manifest"
+
+    # マニフェストがなければ初回（まだバックアップされていない）
+    if [[ ! -f "$manifest" ]]; then
+        return 0
+    fi
+
+    local missing=()
+    local size_changed=()
+
+    while IFS= read -r line; do
+        # コメント行・空行をスキップ
+        [[ "$line" =~ ^#.*$ || -z "$line" ]] && continue
+
+        local size path
+        size="${line%% *}"
+        path="${line#* }"
+
+        local full_path="$project_dir/$path"
+
+        if [[ ! -f "$full_path" ]]; then
+            missing+=("$path")
+        else
+            local current_size
+            current_size=$(stat --format='%s' "$full_path" 2>/dev/null || echo "0")
+            if [[ "$current_size" != "$size" ]]; then
+                size_changed+=("$path (backup: ${size}B, now: ${current_size}B)")
+            fi
+        fi
+    done < "$manifest"
+
+    # 警告がある場合のみバックアップ時刻を表示
+    if [[ ${#missing[@]} -gt 0 || ${#size_changed[@]} -gt 0 ]]; then
+        local backup_time
+        backup_time=$(head -1 "$manifest" | sed 's/^# backup: \([^ ]*\).*/\1/')
+    fi
+
+    # 消失ファイルがあれば警告
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        echo "⚠ バックアップ後に消失したファイルを検出しました:"
+        echo "  (前回バックアップ: $backup_time)"
+        for f in "${missing[@]}"; do
+            echo "  - $f"
+        done
+        echo "  復元元: $REGISTRY_BASE/$hostname/$dir_name/states/"
+    fi
+
+    # サイズ変更があれば軽い通知
+    if [[ ${#size_changed[@]} -gt 0 ]]; then
+        echo "ℹ 前回バックアップ ($backup_time) からサイズが変わったファイル:"
+        for f in "${size_changed[@]}"; do
+            echo "  - $f"
+        done
+    fi
+}
+
 run_hook() {
     local input
     input=$(cat)
@@ -123,6 +192,9 @@ run_hook() {
 
     # registry に登録
     register_project "$project_dir"
+
+    # バックアップの整合性チェック
+    check_backup_integrity "$project_dir"
 }
 
 do_install() {
