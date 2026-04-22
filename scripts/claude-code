@@ -6,14 +6,174 @@
 #
 # 起動時に reports/project_title.txt があれば表示する。
 # ログ出力先: ~/.claude/osc-logs/
+#
+# Wrapper options:
+#   --list-versions            インストール済み Claude Code バージョン一覧
+#   --enforce-version VERSION  指定バージョンで起動（回帰回避用）
+#   --help                     wrapper ヘルプ + claude --help
 
-# プロジェクトタイトルの表示
-TITLE_FILE="reports/project_title.txt"
-if [[ -f "$TITLE_FILE" ]]; then
-    printf '\033[36m%s\033[0m\n' "$(cat "$TITLE_FILE")"
+VERSIONS_DIR="${HOME}/.local/share/claude/versions"
+CLAUDE_SYMLINK="${HOME}/.local/bin/claude"
+LOG_DIR="${HOME}/.claude/osc-logs"
+
+# Versions to avoid on default launch. If the active version (as pointed to by
+# the claude symlink) appears here, the wrapper falls back to the highest
+# non-blacklisted version installed. --enforce-version bypasses this check.
+VERSION_BLACKLIST=(
+    "2.1.117"
+)
+
+print_wrapper_help() {
+    cat <<'EOF'
+claude-code wrapper (osc-tap logging + version management)
+
+Wrapper-specific options:
+  --list-versions            List installed Claude Code versions
+  --enforce-version VERSION  Launch a specific version (e.g. 2.1.116)
+                             Useful to pin around a buggy release.
+
+Versions listed in VERSION_BLACKLIST (near the top of this script) are
+auto-avoided on default launch: the highest non-blacklisted version is
+used instead. --enforce-version bypasses the blacklist.
+
+Other options are passed through to claude.
+Below is the underlying `claude --help` output:
+
+---
+EOF
+}
+
+is_blacklisted() {
+    local v="$1"
+    local b
+    for b in "${VERSION_BLACKLIST[@]}"; do
+        [[ "$v" == "$b" ]] && return 0
+    done
+    return 1
+}
+
+pick_fallback_version() {
+    # Highest non-blacklisted installed version (empty if none).
+    local candidates=()
+    local v name
+    for v in "$VERSIONS_DIR"/*; do
+        [[ -x "$v" ]] || continue
+        name="$(basename "$v")"
+        is_blacklisted "$name" && continue
+        candidates+=("$name")
+    done
+    (( ${#candidates[@]} == 0 )) && return 0
+    printf '%s\n' "${candidates[@]}" | sort -V | tail -1
+}
+
+list_versions() {
+    local current_target=""
+    if [[ -L "$CLAUDE_SYMLINK" ]]; then
+        current_target="$(readlink -f "$CLAUDE_SYMLINK" 2>/dev/null)"
+    fi
+    echo "Installed versions (in $VERSIONS_DIR):"
+    local found=0
+    for v in "$VERSIONS_DIR"/*; do
+        [[ -x "$v" ]] || continue
+        found=1
+        local name markers
+        name="$(basename "$v")"
+        markers=""
+        [[ "$v" == "$current_target" ]] && markers="current"
+        if is_blacklisted "$name"; then
+            markers="${markers:+$markers, }blacklisted"
+        fi
+        if [[ -n "$markers" ]]; then
+            printf "  %s  (%s)\n" "$name" "$markers"
+        else
+            printf "  %s\n" "$name"
+        fi
+    done
+    if (( ! found )); then
+        echo "  (none)"
+    fi
+}
+
+# Parse wrapper-specific flags (preserve order of passthrough args)
+enforced_version=""
+show_list=0
+show_help=0
+passthrough_args=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --list-versions)
+            show_list=1
+            shift
+            ;;
+        --enforce-version)
+            if [[ $# -lt 2 ]]; then
+                echo "claude-code: --enforce-version requires a value" >&2
+                exit 2
+            fi
+            enforced_version="$2"
+            shift 2
+            ;;
+        --enforce-version=*)
+            enforced_version="${1#--enforce-version=}"
+            shift
+            ;;
+        --help|-h)
+            show_help=1
+            passthrough_args+=("$1")
+            shift
+            ;;
+        *)
+            passthrough_args+=("$1")
+            shift
+            ;;
+    esac
+done
+
+# --list-versions: print and exit
+if (( show_list )); then
+    list_versions
+    exit 0
 fi
 
-LOG_DIR="${HOME}/.claude/osc-logs"
+# Resolve which claude binary to use
+claude_bin="claude"
+if [[ -n "$enforced_version" ]]; then
+    candidate="$VERSIONS_DIR/$enforced_version"
+    if [[ ! -x "$candidate" ]]; then
+        echo "claude-code: version '$enforced_version' not found in $VERSIONS_DIR" >&2
+        echo "" >&2
+        list_versions >&2
+        exit 1
+    fi
+    claude_bin="$candidate"
+elif (( ${#VERSION_BLACKLIST[@]} > 0 )) && [[ -L "$CLAUDE_SYMLINK" ]]; then
+    current_target="$(readlink -f "$CLAUDE_SYMLINK" 2>/dev/null)"
+    current_version="$(basename "$current_target")"
+    if is_blacklisted "$current_version"; then
+        fallback="$(pick_fallback_version)"
+        if [[ -z "$fallback" ]]; then
+            echo "claude-code: active version '$current_version' is blacklisted and no alternative is available in $VERSIONS_DIR" >&2
+            echo "            override with --enforce-version $current_version" >&2
+            exit 1
+        fi
+        echo "claude-code: active version '$current_version' is blacklisted; falling back to '$fallback'" >&2
+        claude_bin="$VERSIONS_DIR/$fallback"
+    fi
+fi
+
+# --help intercept: print wrapper help first, then delegate to claude --help
+if (( show_help )); then
+    print_wrapper_help
+fi
+
+# プロジェクトタイトルの表示（--help 時はスキップ）
+if (( ! show_help )); then
+    TITLE_FILE="reports/project_title.txt"
+    if [[ -f "$TITLE_FILE" ]]; then
+        printf '\033[36m%s\033[0m\n' "$(cat "$TITLE_FILE")"
+    fi
+fi
 
 exec osc-tap \
     --output "$LOG_DIR" \
@@ -21,4 +181,4 @@ exec osc-tap \
     --matcher TRANSCRIPT '10321;TRANSCRIPT=(.*)' \
     --matcher CWD '10321;CWD=(.*)' \
     --matcher SESSION_ID '10321;SESSION_ID=(.*)' \
-    -- claude "$@"
+    -- "$claude_bin" "${passthrough_args[@]}"

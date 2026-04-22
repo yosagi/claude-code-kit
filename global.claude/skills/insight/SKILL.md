@@ -6,6 +6,7 @@ allowed-tools:
   - Skill(stocktake)
   - Skill(memory-compact)
   - Skill(notia-search)
+  - Write(/reports/insight/**)
   - Bash(~/.claude/skills/inbox-send/inbox-send.sh:*)
 ---
 
