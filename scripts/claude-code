@@ -3,6 +3,7 @@
 #
 # osc-tap 経由で claude を起動し、OSC シーケンスをキャプチャする。
 # セッションログのエクスポートやタイトル取得に利用される。
+# osc-tap が PATH に無い場合は素の claude を直接起動する。
 #
 # 起動時に reports/project_title.txt があれば表示する。
 # ログ出力先: ~/.claude/osc-logs/
@@ -175,10 +176,15 @@ if (( ! show_help )); then
     fi
 fi
 
-exec osc-tap \
-    --output "$LOG_DIR" \
-    --matcher TITLE '0;(.*)' \
-    --matcher TRANSCRIPT '10321;TRANSCRIPT=(.*)' \
-    --matcher CWD '10321;CWD=(.*)' \
-    --matcher SESSION_ID '10321;SESSION_ID=(.*)' \
-    -- "$claude_bin" "${passthrough_args[@]}"
+if command -v osc-tap >/dev/null 2>&1; then
+    exec osc-tap \
+        --output "$LOG_DIR" \
+        --matcher TITLE '0;(.*)' \
+        --matcher TRANSCRIPT '10321;TRANSCRIPT=(.*)' \
+        --matcher CWD '10321;CWD=(.*)' \
+        --matcher SESSION_ID '10321;SESSION_ID=(.*)' \
+        -- "$claude_bin" "${passthrough_args[@]}"
+else
+    # osc-tap が無い環境では素の claude を起動する（OSC ログは記録されない）。
+    exec "$claude_bin" "${passthrough_args[@]}"
+fi
