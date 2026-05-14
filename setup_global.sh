@@ -132,6 +132,10 @@ do_install() {
     chmod +x "$HOOKS_DIR/session_end.sh"
     cp "$SCRIPT_DIR/global.claude/hooks/process_journal_drafts.sh" "$HOOKS_DIR/"
     chmod +x "$HOOKS_DIR/process_journal_drafts.sh"
+    cp "$SCRIPT_DIR/global.claude/hooks/process_memory_drafts.sh" "$HOOKS_DIR/"
+    chmod +x "$HOOKS_DIR/process_memory_drafts.sh"
+    cp "$SCRIPT_DIR/global.claude/hooks/append_memory_entry.py" "$HOOKS_DIR/"
+    chmod +x "$HOOKS_DIR/append_memory_entry.py"
 
     info "SessionStart hook をインストール中..."
     cp "$SCRIPT_DIR/global.claude/hooks/session_start.sh" "$HOOKS_DIR/"
@@ -205,14 +209,19 @@ do_install() {
     local tmp=$(mktemp)
     jq --argjson perms "$permissions" \
        --arg hook_end_cmd "$HOOKS_DIR/session_end.sh" \
+       --arg hook_memory_cmd "$HOOKS_DIR/process_memory_drafts.sh" \
        --arg hook_start_cmd "$HOOKS_DIR/session_start.sh" \
        --arg statusline_cmd "$CLAUDE_DIR/statusline.sh" '
         # 許可設定をマージ
         .permissions.allow = ((.permissions.allow // []) + $perms | unique) |
         # SessionEnd hook をマージ（既存エントリを保持、自分の hook は追加/更新）
         .hooks.SessionEnd = (
-            [.hooks.SessionEnd // [] | .[] | select(.hooks[0].command != $hook_end_cmd)] +
-            [{"hooks": [{"type": "command", "command": $hook_end_cmd}]}]
+            [.hooks.SessionEnd // [] | .[] | select(
+                .hooks[0].command != $hook_end_cmd and
+                .hooks[0].command != $hook_memory_cmd
+            )] +
+            [{"hooks": [{"type": "command", "command": $hook_end_cmd}]},
+             {"hooks": [{"type": "command", "command": $hook_memory_cmd}]}]
         ) |
         # SessionStart hook をマージ（既存エントリを保持、自分の hook は追加/更新）
         .hooks.SessionStart = (

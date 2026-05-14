@@ -5,6 +5,9 @@
 # Usage: submit_draft.sh <日付> <プロジェクト名> <ドラフトファイルパス>
 # Example: submit_draft.sh 2026-04-13 claude /path/to/draft.org
 #
+# 出力ファイル名: YYYY-MM-DD_HHMMSS_work-logger_project@hostname.org
+# 3番目のフィールド (work-logger) で dispatcher がこの skill の append_journal.py に振る。
+#
 # 出力: 提出先のファイルパスを stdout に出力
 
 set -euo pipefail
@@ -33,7 +36,7 @@ mkdir -p "$DRAFTS_DIR"
 
 hostname="$(hostname)"
 time_str="$(date +%H%M%S)"
-dest="${DRAFTS_DIR}/${date}_${time_str}_${project}@${hostname}.org"
+dest="${DRAFTS_DIR}/${date}_${time_str}_work-logger_${project}@${hostname}.org"
 
 cp "$draft_file" "$dest"
 rm "$draft_file"

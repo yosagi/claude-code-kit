@@ -5,13 +5,22 @@
 # セッションログのエクスポートやタイトル取得に利用される。
 # osc-tap が PATH に無い場合は素の claude を直接起動する。
 #
+# 起動時に ~/Notes/claude-registry/dist/.dist-stamp が更新されていたら
+# setup_global.sh --install を自動実行する（auto-install）。
+#
+# CLAUDE.md / CLAUDE.local.md がなければ dist から自動配置、
+# 更新があれば対話的に確認する。.no-claude-md-sync を置くと同期しない。
+#
 # 起動時に reports/project_title.txt があれば表示する。
 # ログ出力先: ~/.claude/osc-logs/
 #
 # Wrapper options:
 #   --list-versions            インストール済み Claude Code バージョン一覧
 #   --enforce-version VERSION  指定バージョンで起動（回帰回避用）
+#   --no-osc-tap               osc-tap をバイパスして素の claude を起動
 #   --help                     wrapper ヘルプ + claude --help
+#
+# stdout が TTY でないときは osc-tap を自動バイパスする（systemd service など）。
 
 VERSIONS_DIR="${HOME}/.local/share/claude/versions"
 CLAUDE_SYMLINK="${HOME}/.local/bin/claude"
@@ -32,10 +41,17 @@ Wrapper-specific options:
   --list-versions            List installed Claude Code versions
   --enforce-version VERSION  Launch a specific version (e.g. 2.1.116)
                              Useful to pin around a buggy release.
+  --no-osc-tap               Bypass osc-tap and exec claude directly.
+                             Auto-enabled when stdout is not a TTY
+                             (e.g. systemd service, CI, piped output).
 
 Versions listed in VERSION_BLACKLIST (near the top of this script) are
 auto-avoided on default launch: the highest non-blacklisted version is
 used instead. --enforce-version bypasses the blacklist.
+
+Auto-install: if ~/Notes/claude-registry/dist/.dist-stamp differs from
+~/.claude/.dist-stamp, setup_global.sh --install runs automatically
+before launching claude. Output is logged to ~/.claude/auto-install.log.
 
 Other options are passed through to claude.
 Below is the underlying `claude --help` output:
@@ -99,6 +115,7 @@ list_versions() {
 enforced_version=""
 show_list=0
 show_help=0
+no_osc_tap=0
 passthrough_args=()
 
 while [[ $# -gt 0 ]]; do
@@ -119,6 +136,10 @@ while [[ $# -gt 0 ]]; do
             enforced_version="${1#--enforce-version=}"
             shift
             ;;
+        --no-osc-tap)
+            no_osc_tap=1
+            shift
+            ;;
         --help|-h)
             show_help=1
             passthrough_args+=("$1")
@@ -130,6 +151,69 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Auto-bypass osc-tap when stdout is not a TTY (headless / piped).
+if [[ ! -t 1 ]]; then
+    no_osc_tap=1
+fi
+
+# Auto-install: if registry dist has a newer stamp, run setup_global.sh --install.
+REGISTRY_DIST="$HOME/Notes/claude-registry/dist"
+REGISTRY_STAMP="$REGISTRY_DIST/.dist-stamp"
+LOCAL_STAMP="$HOME/.claude/.dist-stamp"
+
+maybe_auto_install() {
+    [[ -f "$REGISTRY_STAMP" ]] || return 0
+    local registry_stamp local_stamp
+    registry_stamp="$(cat "$REGISTRY_STAMP" 2>/dev/null)" || return 0
+    local_stamp="$(cat "$LOCAL_STAMP" 2>/dev/null)"
+    [[ "$registry_stamp" == "$local_stamp" ]] && return 0
+
+    local log_file="$HOME/.claude/auto-install.log"
+    echo "claude-code: dist updated, auto-installing..." >&2
+    if "$REGISTRY_DIST/setup_global.sh" --install > "$log_file" 2>&1; then
+        mkdir -p "$(dirname "$LOCAL_STAMP")"
+        cp "$REGISTRY_STAMP" "$LOCAL_STAMP"
+        echo "claude-code: auto-install complete (log: $log_file)" >&2
+    else
+        echo "claude-code: auto-install failed (log: $log_file)" >&2
+    fi
+}
+maybe_auto_install
+
+# CLAUDE.md / CLAUDE.local.md sync: deploy dist templates to project root.
+NO_SYNC_MARKER=".no-claude-md-sync"
+
+maybe_sync_claude_md() {
+    [[ -d "$REGISTRY_DIST" ]] || return 0
+    local project_root
+    project_root="$(git rev-parse --show-toplevel 2>/dev/null)" || project_root="$(pwd)"
+    [[ -f "$project_root/$NO_SYNC_MARKER" ]] && return 0
+
+    local need_update=()
+    for f in CLAUDE.md CLAUDE.local.md; do
+        local src="$REGISTRY_DIST/$f"
+        [[ -f "$src" ]] || continue
+        if [[ ! -f "$project_root/$f" ]]; then
+            cp "$src" "$project_root/$f"
+            echo "claude-code: $f を配置しました" >&2
+        elif ! diff -q "$src" "$project_root/$f" > /dev/null 2>&1; then
+            need_update+=("$f")
+        fi
+    done
+
+    if (( ${#need_update[@]} > 0 )); then
+        echo "claude-code: ${need_update[*]} に更新があります" >&2
+        read -p "更新しますか? [y/N] " answer < /dev/tty
+        if [[ "$answer" =~ ^[yY] ]]; then
+            for f in "${need_update[@]}"; do
+                cp "$REGISTRY_DIST/$f" "$project_root/$f"
+            done
+            echo "claude-code: 更新しました" >&2
+        fi
+    fi
+}
+maybe_sync_claude_md
 
 # --list-versions: print and exit
 if (( show_list )); then
@@ -176,7 +260,10 @@ if (( ! show_help )); then
     fi
 fi
 
-if command -v osc-tap >/dev/null 2>&1; then
+if (( no_osc_tap )) || ! command -v osc-tap >/dev/null 2>&1; then
+    # --no-osc-tap 指定時、非TTY環境、osc-tap が無い環境は素の claude を起動する。
+    exec "$claude_bin" "${passthrough_args[@]}"
+else
     exec osc-tap \
         --output "$LOG_DIR" \
         --matcher TITLE '0;(.*)' \
@@ -184,7 +271,4 @@ if command -v osc-tap >/dev/null 2>&1; then
         --matcher CWD '10321;CWD=(.*)' \
         --matcher SESSION_ID '10321;SESSION_ID=(.*)' \
         -- "$claude_bin" "${passthrough_args[@]}"
-else
-    # osc-tap が無い環境では素の claude を起動する（OSC ログは記録されない）。
-    exec "$claude_bin" "${passthrough_args[@]}"
 fi

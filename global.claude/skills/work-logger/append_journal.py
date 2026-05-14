@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
-journals ファイルにエントリを追記する
+work-logger のドラフトを journals に追記する
 
-使い方:
-    append_journal.py <日付> <プロジェクト名> <ドラフトファイル>
+使い方（新形式、dispatcher からの呼び出し）:
+    append_journal.py <draft_file>
 
-例:
-    append_journal.py 2026-02-05 claude /tmp/draft.md
+ドラフトファイル名から date と project を抽出する:
+    YYYY-MM-DD_HHMMSS_work-logger_<project>@<hostname>.org
+
+使い方（legacy 後方互換、dispatcher からの fallback 用）:
+    append_journal.py <date> <project> <draft_file>
 
 処理:
     1. ~/Notes/journals/YYYY-MM-DD.org を開く（なければ作成）
@@ -99,14 +102,20 @@ def append_entry(journal_path: Path, project: str, entry: str) -> None:
     log_section_idx = find_section(parsed, 1, "Claude 作業ログ")
 
     if log_section_idx is None:
-        # 作業ログセクションがない → ヘッダ行(#+)の後に追加
+        # 作業ログセクションがない → 新規作成
+        # 配置順: 作業ログ → 雑記 を強制するため、雑記があればその直前に挿入
         lines = content.split('\n')
-        insert_pos = 0
-        for i, line in enumerate(lines):
-            if line.startswith('#+'):
-                insert_pos = i + 1
-            else:
-                break
+        note_idx = find_section(parsed, 1, "Claude 雑記")
+        if note_idx is not None:
+            insert_pos = note_idx
+        else:
+            # どちらも無い → ヘッダ行(#+)の直後
+            insert_pos = 0
+            for i, line in enumerate(lines):
+                if line.startswith('#+'):
+                    insert_pos = i + 1
+                else:
+                    break
         new_lines = lines[:insert_pos] + [f"* Claude 作業ログ\n** {project}\n{entry}\n"] + lines[insert_pos:]
         journal_path.write_text('\n'.join(new_lines))
         return
@@ -137,17 +146,44 @@ def append_entry(journal_path: Path, project: str, entry: str) -> None:
     journal_path.write_text('\n'.join(new_lines))
 
 
+def parse_draft_filename(draft_path: Path) -> tuple[str, str]:
+    """
+    新形式ドラフトファイル名から date と project@hostname を抽出する
+
+    ファイル名: YYYY-MM-DD_HHMMSS_work-logger_<project>@<hostname>.org
+    """
+    name = draft_path.stem  # .org を除いた部分
+    parts = name.split('_', 3)
+    if len(parts) != 4:
+        raise ValueError(f"Unexpected draft filename: {draft_path}")
+    date = parts[0]
+    project_host = parts[3]
+    return date, project_host
+
+
 def main():
-    if len(sys.argv) != 4:
-        print("Usage: append_journal.py <date> <project> <draft_file>", file=sys.stderr)
-        sys.exit(1)
-
-    date = sys.argv[1]
-    project = sys.argv[2]
-    draft_path = Path(sys.argv[3])
-
-    if not draft_path.exists():
-        print(f"Error: Draft file not found: {draft_path}", file=sys.stderr)
+    # 新形式: append_journal.py <draft_file>
+    # 後方互換 (legacy fallback): append_journal.py <date> <project> <draft_file>
+    if len(sys.argv) == 2:
+        draft_path = Path(sys.argv[1])
+        if not draft_path.exists():
+            print(f"Error: Draft file not found: {draft_path}", file=sys.stderr)
+            sys.exit(1)
+        try:
+            date, project = parse_draft_filename(draft_path)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+    elif len(sys.argv) == 4:
+        date = sys.argv[1]
+        project = sys.argv[2]
+        draft_path = Path(sys.argv[3])
+        if not draft_path.exists():
+            print(f"Error: Draft file not found: {draft_path}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        print("Usage: append_journal.py <draft_file>", file=sys.stderr)
+        print("       append_journal.py <date> <project> <draft_file>  (legacy)", file=sys.stderr)
         sys.exit(1)
 
     entry = draft_path.read_text().rstrip('\n')

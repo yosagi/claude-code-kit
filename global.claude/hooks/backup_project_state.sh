@@ -18,33 +18,57 @@ backup_project_state() {
     local project_dir="$1"
     local session_id="${2:-}"
 
-    # reports/ が symlink なら実体は別プロジェクトにあるのでスキップ
-    if [[ -L "$project_dir/reports" ]]; then
-        return 0
-    fi
-
-    # reports/ がなければ何もしない
-    if [[ ! -d "$project_dir/reports" ]]; then
-        return 0
-    fi
-
     local hostname
     hostname=$(hostname)
     local dir_name
     dir_name=$(path_to_dirname "$project_dir")
     local states_dir="$REGISTRY_BASE/$hostname/$dir_name/states"
 
+    # reports/ が実ディレクトリのときだけ同期（symlink なら実体は別プロジェクト側）
+    local backup_reports=false
+    if [[ -d "$project_dir/reports" && ! -L "$project_dir/reports" ]]; then
+        backup_reports=true
+    fi
+
+    # .claude/ が存在すれば同期（skills/ やデバイスファイルは除外）
+    local backup_claude_dir=false
+    if [[ -d "$project_dir/.claude" && ! -L "$project_dir/.claude" ]]; then
+        backup_claude_dir=true
+    fi
+
+    # バックアップ対象が何もなければ何もしない
+    local has_root_files=false
+    for f in CLAUDE.md CLAUDE.local.md work_in_progress.md; do
+        if [[ -f "$project_dir/$f" ]]; then
+            has_root_files=true
+            break
+        fi
+    done
+    if ! $backup_reports && ! $has_root_files && ! $backup_claude_dir; then
+        return 0
+    fi
+
     mkdir -p "$states_dir"
 
     # reports/ をまるごと同期
-    rsync -a --delete "$project_dir/reports/" "$states_dir/reports/"
+    if $backup_reports; then
+        rsync -a --delete "$project_dir/reports/" "$states_dir/reports/"
+    fi
+
+    # .claude/ を同期（skills/ とデバイスファイルを除外）
+    if $backup_claude_dir; then
+        rsync -a --delete \
+            --exclude='skills/' \
+            --exclude='agents' \
+            --exclude='commands' \
+            "$project_dir/.claude/" "$states_dir/.claude/"
+    fi
 
     # プロジェクトルート直下の重要ファイルをコピー
     for f in CLAUDE.md CLAUDE.local.md work_in_progress.md; do
         if [[ -f "$project_dir/$f" ]]; then
             rsync -a "$project_dir/$f" "$states_dir/$f"
         else
-            # プロジェクト側で消えていたら states 側も消す
             rm -f "$states_dir/$f"
         fi
     done
@@ -56,9 +80,14 @@ backup_project_state() {
 
     {
         echo "# backup: $timestamp session:${session_id:0:8}"
-        # reports/ 以下のファイル一覧（サイズ パス）
-        (cd "$project_dir" && find reports/ -type f -printf '%s %p\n' | sort -k2)
-        # ルート直下ファイル
+        if $backup_reports; then
+            (cd "$project_dir" && find reports/ -type f -printf '%s %p\n' | sort -k2)
+        fi
+        if $backup_claude_dir; then
+            (cd "$project_dir" && find .claude/ -type f \
+                ! -path '.claude/skills/*' \
+                -printf '%s %p\n' | sort -k2)
+        fi
         for f in CLAUDE.md CLAUDE.local.md work_in_progress.md; do
             if [[ -f "$project_dir/$f" ]]; then
                 (cd "$project_dir" && find "$f" -maxdepth 0 -type f -printf '%s %p\n')

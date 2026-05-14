@@ -112,11 +112,6 @@ register_project() {
 check_backup_integrity() {
     local project_dir="$1"
 
-    # reports/ が symlink ならバックアップ対象外なのでチェックもスキップ
-    if [[ -L "$project_dir/reports" ]]; then
-        return 0
-    fi
-
     local hostname
     hostname=$(hostname)
     local dir_name

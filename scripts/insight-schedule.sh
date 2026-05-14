@@ -20,7 +20,7 @@ Commands:
   logs <project-path> [-f]                    実行ログを表示
 
 Schedule spec:
-  weekly    毎週日曜 3:00（デフォルト）
+  weekly    毎週月曜 3:00（デフォルト）
   daily     毎日 3:00
   <cron式>  OnCalendar 形式（例: "Mon *-*-* 03:00:00"）
 
@@ -67,15 +67,18 @@ resolve_project_path() {
 resolve_schedule() {
     local spec="${1:-weekly}"
     case "$spec" in
-        weekly)  echo "Sun *-*-* 03:00:00" ;;
+        weekly)  echo "Mon *-*-* 03:00:00" ;;
         daily)   echo "*-*-* 03:00:00" ;;
         *)       echo "$spec" ;;
     esac
 }
 
 # claude コマンドのパスを取得
+# version blacklist を効かせるため claude-code wrapper を優先
 find_claude() {
-    if command -v claude &>/dev/null; then
+    if command -v claude-code &>/dev/null; then
+        command -v claude-code
+    elif command -v claude &>/dev/null; then
         command -v claude
     elif [[ -x "$HOME/.claude/local/claude" ]]; then
         echo "$HOME/.claude/local/claude"
@@ -121,7 +124,7 @@ Description=Insight report for ${project_path}
 [Service]
 Type=oneshot
 WorkingDirectory=${project_path}
-ExecStart=${claude_cmd} -p "/insight"
+ExecStart=${claude_cmd} -p --permission-mode acceptEdits "/insight"
 Environment=HOME=${HOME}
 # タイムアウト: insight は時間がかかる場合がある
 TimeoutStartSec=1800
