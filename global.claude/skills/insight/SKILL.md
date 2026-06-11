@@ -228,7 +228,7 @@ inbox-send.sh で自プロジェクトに通知を送る。Write/Edit で直接 
 - **レポート**: `reports/insight/YYYY-MM-DD_insight.md`
 - **主な発見**: [提案一覧の件数と概要を1-2行で]
 
-確認するには `/insight-review YYYY-MM-DD_from_insight.md` を実行してください。
+この通知を読んだら、ユーザーの指示のもと、`/insight-review` スキルで処理してください。
 ```
 
 2. 送信:

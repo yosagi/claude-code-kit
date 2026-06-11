@@ -15,13 +15,13 @@ Usage:
 Arguments:
   dest_project_path    - 送信先プロジェクトのパス（例: ~/work/myproject）
                          リモートの場合: remote:hostname:/path/to/project
-  draft_file_path      - draft ファイルのパス（例: reports/inbox/draft/to_xxx_topic.md）
+  draft_file_path      - draft ファイルのパス（例: reports/draft/to_xxx_topic.md）
   source_project_name  - 送信元プロジェクト名（例: claude）
   date                 - 日付（例: 2026-02-19）
 
 Example:
-  inbox-send.sh ~/work/myproject reports/inbox/draft/to_xxx_topic.md myproject 2026-01-25
-  inbox-send.sh remote:pc-b:~/work/wip reports/inbox/draft/to_wip_topic.md claude 2026-03-31
+  inbox-send.sh ~/work/myproject reports/draft/to_xxx_topic.md myproject 2026-01-25
+  inbox-send.sh remote:pc-b:~/work/wip reports/draft/to_wip_topic.md claude 2026-03-31
 EOF
     exit 1
 }

@@ -11,7 +11,8 @@ PROJECT_ROOT="${1:-.}"
 dirs=(
     reports/ideas/done reports/ideas/rejected
     reports/todos/done reports/todos/rejected
-    reports/inbox/done reports/inbox/draft
+    reports/inbox/done
+    reports/draft
     reports/kb
     reports/tasks
     reports/misc

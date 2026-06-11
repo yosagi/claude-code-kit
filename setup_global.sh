@@ -136,6 +136,8 @@ do_install() {
     chmod +x "$HOOKS_DIR/process_memory_drafts.sh"
     cp "$SCRIPT_DIR/global.claude/hooks/append_memory_entry.py" "$HOOKS_DIR/"
     chmod +x "$HOOKS_DIR/append_memory_entry.py"
+    cp "$SCRIPT_DIR/global.claude/hooks/backup_project_state.sh" "$HOOKS_DIR/"
+    chmod +x "$HOOKS_DIR/backup_project_state.sh"
 
     info "SessionStart hook をインストール中..."
     cp "$SCRIPT_DIR/global.claude/hooks/session_start.sh" "$HOOKS_DIR/"

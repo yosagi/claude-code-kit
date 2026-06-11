@@ -36,7 +36,7 @@ cd /path/to/project/root
 
 ### 4. draft ファイルを作成
 
-`reports/inbox/draft/to_[送信先ヒント]_[トピック].md`:
+`reports/draft/to_[送信先ヒント]_[トピック].md`:
 
 ```markdown
 送信先: [送信先プロジェクトルート]
@@ -55,7 +55,7 @@ cd /path/to/project/root
 **注意**:
 - 「送信先」「報告先」はプロジェクトルートを指定する。
 - **リモート送信の場合**: 報告先は `remote:$(hostname):プロジェクトルート` 形式にする。送信先が `remote:` で始まるなら、相手から見た自分もリモートである。
-- draft ディレクトリがなければ `reports/inbox/draft/` を作成する。
+- draft ディレクトリがなければ `reports/draft/` を作成する。
 - 日付がわからない場合は `date +%Y-%m-%d` で確認。
 
 ### 5. 依頼を送信
