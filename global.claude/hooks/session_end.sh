@@ -328,8 +328,15 @@ write_session_log() {
         return 0
     fi
 
-    # ccexport で JSON 形式でエクスポート
-    ccexport export -s "$session_id" -o "$log_file" -f json 2>/dev/null || true
+    # ccexport で JSON 形式でエクスポート（osc-tap ログがあればタイトルも含める）
+    # --titles-dir はログ全走査で数秒かかるため nohup+disown で切り離す
+    local titles_args=()
+    if [[ -d "$HOME/.claude/osc-logs" ]]; then
+        titles_args=(--titles-dir "$HOME/.claude/osc-logs/")
+    fi
+    nohup ccexport export -s "$session_id" -o "$log_file" -f json \
+        "${titles_args[@]}" >/dev/null 2>&1 &
+    disown
 }
 
 resolve_project_dir() {
@@ -434,11 +441,16 @@ run_hook() {
     mkdir -p "$(dirname "$output_file")"
 
     # ccexport を実行（osc-tap ログがあればタイトルも含める）
+    # --titles-dir は exists=True 制約があるため、ディレクトリがあるときのみ付ける
     # Note: SessionEnd hook はプロセス終了時に即座に kill される既知の問題があるため
     # (https://github.com/anthropics/claude-code/issues/41577)
     # nohup + disown でプロセスを切り離して実行する
+    local titles_args=()
+    if [[ -d "$HOME/.claude/osc-logs" ]]; then
+        titles_args=(--titles-dir "$HOME/.claude/osc-logs/")
+    fi
     nohup ccexport export -s "$session_id" -o "$output_file" -f org \
-        --titles-dir "$HOME/.claude/osc-logs/" >/dev/null 2>&1 &
+        "${titles_args[@]}" >/dev/null 2>&1 &
     disown
 }
 

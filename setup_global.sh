@@ -45,7 +45,7 @@ Options:
   - Status Line (コンテキスト残量表示)
   - 許可設定 (記憶ファイルへのアクセス許可)
   - claude-code ラッパー (osc-tap 経由の起動スクリプト、osc-tap 必須)
-  - グローバルルール (~/.claude/CLAUDE.md + registry/global_rules.md、初回のみ)
+  - グローバル KB コンテキスト組み立てスクリプト (build_startup_context.py)
 
 EOF
 }
@@ -143,6 +143,10 @@ do_install() {
     cp "$SCRIPT_DIR/global.claude/hooks/session_start.sh" "$HOOKS_DIR/"
     chmod +x "$HOOKS_DIR/session_start.sh"
 
+    info "Time awareness hook をインストール中..."
+    cp "$SCRIPT_DIR/global.claude/hooks/time_awareness.sh" "$HOOKS_DIR/"
+    chmod +x "$HOOKS_DIR/time_awareness.sh"
+
     # 3. statusline.sh をコピー
     info "Status Line をインストール中..."
     cp "$SCRIPT_DIR/global.claude/statusline.sh" "$CLAUDE_DIR/"
@@ -158,22 +162,24 @@ do_install() {
         warn "osc-tap 未インストールのため claude-code ラッパーはスキップしました"
     fi
 
-    # 5. グローバルルールをインストール（存在しない場合のみ）
-    if [[ ! -f "$GLOBAL_RULES_FILE" ]]; then
-        info "グローバルルールを配置中..."
-        mkdir -p "$REGISTRY_DIR"
-        cp "$SCRIPT_DIR/global.claude/global_rules.md" "$GLOBAL_RULES_FILE"
-    else
-        info "グローバルルール: 既存ファイルを維持 ($GLOBAL_RULES_FILE)"
+    # 5. build_startup_context.py をインストール
+    info "build_startup_context.py をインストール中..."
+    mkdir -p "$CLAUDE_DIR/scripts"
+    cp "$SCRIPT_DIR/scripts/build_startup_context.py" "$CLAUDE_DIR/scripts/"
+
+    # 6. グローバルルール移行チェック
+    # global_rules.md はグローバル KB (registry/<host>/kb/) に統合済み。
+    # 旧ファイルが残っていたら案内を出す。
+    if [[ -f "$GLOBAL_RULES_FILE" ]]; then
+        warn "旧 global_rules.md が残っています: $GLOBAL_RULES_FILE"
+        warn "グローバル KB に統合済みです。削除してください: rm $GLOBAL_RULES_FILE"
     fi
-    if [[ ! -f "$GLOBAL_CLAUDE_MD" ]]; then
-        info "~/.claude/CLAUDE.md を作成中..."
-        echo "@$GLOBAL_RULES_FILE" > "$GLOBAL_CLAUDE_MD"
-    else
-        info "~/.claude/CLAUDE.md: 既存ファイルを維持"
+    if [[ -f "$GLOBAL_CLAUDE_MD" ]] && grep -q '@.*global_rules' "$GLOBAL_CLAUDE_MD" 2>/dev/null; then
+        info "~/.claude/CLAUDE.md から旧インクルード行を除去中..."
+        sed -i '/@.*global_rules/d' "$GLOBAL_CLAUDE_MD"
     fi
 
-    # 6. settings.json を編集
+    # 7. settings.json を編集
     info "settings.json を編集中..."
 
     if [[ ! -f "$SETTINGS_FILE" ]]; then
@@ -213,6 +219,7 @@ do_install() {
        --arg hook_end_cmd "$HOOKS_DIR/session_end.sh" \
        --arg hook_memory_cmd "$HOOKS_DIR/process_memory_drafts.sh" \
        --arg hook_start_cmd "$HOOKS_DIR/session_start.sh" \
+       --arg hook_time_cmd "$HOOKS_DIR/time_awareness.sh" \
        --arg statusline_cmd "$CLAUDE_DIR/statusline.sh" '
         # 許可設定をマージ
         .permissions.allow = ((.permissions.allow // []) + $perms | unique) |
@@ -229,6 +236,11 @@ do_install() {
         .hooks.SessionStart = (
             [.hooks.SessionStart // [] | .[] | select(.hooks[0].command != $hook_start_cmd)] +
             [{"hooks": [{"type": "command", "command": $hook_start_cmd}]}]
+        ) |
+        # UserPromptSubmit hook をマージ（時報: time_awareness.sh）
+        .hooks.UserPromptSubmit = (
+            [.hooks.UserPromptSubmit // [] | .[] | select(.hooks[0].command != $hook_time_cmd)] +
+            [{"hooks": [{"type": "command", "command": $hook_time_cmd}]}]
         ) |
         # Status Line を設定
         .statusLine = {

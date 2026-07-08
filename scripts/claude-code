@@ -11,6 +11,11 @@
 # CLAUDE.md / CLAUDE.local.md がなければ dist から自動配置、
 # 更新があれば対話的に確認する。.no-claude-md-sync を置くと同期しない。
 #
+# cwd に .claude/ と reports/ が揃っていない場所での対話起動時は、
+# 意図しないプロジェクト発生を防ぐため確認プロンプトを出す（上位は辿らない）。
+# 新規プロジェクトとして続行する場合は、セッションログエクスポートの
+# opt-in フラグ (.claude/export_session) を作成するかどうかも確認する。
+#
 # 起動時に reports/project_title.txt があれば表示する。
 # ログ出力先: ~/.claude/osc-logs/
 #
@@ -18,6 +23,8 @@
 #   --list-versions            インストール済み Claude Code バージョン一覧
 #   --enforce-version VERSION  指定バージョンで起動（回帰回避用）
 #   --no-osc-tap               osc-tap をバイパスして素の claude を起動
+#   --show-context             動的コンテキストを表示して終了（claude は起動しない）
+#   --no-context               動的コンテキスト組み立てをスキップ
 #   --help                     wrapper ヘルプ + claude --help
 #
 # stdout が TTY でないときは osc-tap を自動バイパスする（systemd service など）。
@@ -44,6 +51,9 @@ Wrapper-specific options:
   --no-osc-tap               Bypass osc-tap and exec claude directly.
                              Auto-enabled when stdout is not a TTY
                              (e.g. systemd service, CI, piped output).
+  --show-context             Show dynamically assembled global KB context
+                             and exit (does not launch claude).
+  --no-context               Skip dynamic context assembly.
 
 Versions listed in VERSION_BLACKLIST (near the top of this script) are
 auto-avoided on default launch: the highest non-blacklisted version is
@@ -52,6 +62,12 @@ used instead. --enforce-version bypasses the blacklist.
 Auto-install: if ~/Notes/claude-registry/dist/.dist-stamp differs from
 ~/.claude/.dist-stamp, setup_global.sh --install runs automatically
 before launching claude. Output is logged to ~/.claude/auto-install.log.
+
+Project directory guard: when launched interactively in a directory that
+does not have both .claude/ and reports/ (cwd only, no parent traversal),
+a confirmation prompt is shown before launching, to prevent accidentally
+creating an unintended project. Skipped in non-interactive contexts
+(headless, systemd, piped output).
 
 Other options are passed through to claude.
 Below is the underlying `claude --help` output:
@@ -116,6 +132,8 @@ enforced_version=""
 show_list=0
 show_help=0
 no_osc_tap=0
+show_context=0
+no_context=0
 passthrough_args=()
 
 while [[ $# -gt 0 ]]; do
@@ -138,6 +156,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-osc-tap)
             no_osc_tap=1
+            shift
+            ;;
+        --show-context)
+            show_context=1
+            shift
+            ;;
+        --no-context)
+            no_context=1
             shift
             ;;
         --help|-h)
@@ -181,13 +207,62 @@ maybe_auto_install() {
 }
 maybe_auto_install
 
+# Resolve project root by finding .claude/ directory (up to 5 levels up).
+# git rev-parse --show-toplevel は使わない（git root ≠ project root の場合がある）。
+resolve_project_root() {
+    local dir="$(pwd)"
+    local i
+    for i in 1 2 3 4 5; do
+        [[ -d "$dir/.claude" ]] && echo "$dir" && return 0
+        local parent="$(dirname "$dir")"
+        [[ "$parent" == "$dir" ]] && break
+        dir="$parent"
+    done
+    pwd
+}
+
+# Project directory guard: cwd に .claude/ と reports/ が揃っていない場所での
+# 起動は事故（意図しないプロジェクトの発生）の可能性が高いので確認する。
+# 上位ディレクトリは辿らない（Claude Code 自体が settings / セッション履歴を
+# cwd 基準で扱うため、サブディレクトリ起動も新規プロジェクト扱いになる）。
+# CLAUDE.md 自動配置 (maybe_sync_claude_md) より前に呼ぶこと。
+confirm_non_project_dir() {
+    # 対話できない文脈ではスキップ（headless / systemd / パイプ実行）
+    [[ -t 0 && -t 1 ]] || return 0
+    [[ -r /dev/tty ]] || return 0
+
+    [[ -d .claude && -d reports ]] && return 0
+
+    local missing=()
+    [[ -d .claude ]] || missing+=(".claude/")
+    [[ -d reports ]] || missing+=("reports/")
+    echo "claude-code: ここはプロジェクトディレクトリではないようです（${missing[*]} がありません）" >&2
+    echo "  cwd: $(pwd)" >&2
+    local answer
+    read -p "新規プロジェクトとしてここで起動しますか? [y/N] " answer < /dev/tty
+    if [[ ! "$answer" =~ ^[yY] ]]; then
+        echo "claude-code: 起動を中止しました" >&2
+        exit 1
+    fi
+
+    # セッションログエクスポート (session_end.sh) の opt-in フラグ
+    if [[ ! -f .claude/export_session ]]; then
+        read -p "セッションログのエクスポートを有効にしますか? (.claude/export_session を作成) [y/N] " answer < /dev/tty
+        if [[ "$answer" =~ ^[yY] ]]; then
+            mkdir -p .claude
+            touch .claude/export_session
+            echo "claude-code: .claude/export_session を作成しました" >&2
+        fi
+    fi
+}
+
 # CLAUDE.md / CLAUDE.local.md sync: deploy dist templates to project root.
 NO_SYNC_MARKER=".no-claude-md-sync"
 
 maybe_sync_claude_md() {
     [[ -d "$REGISTRY_DIST" ]] || return 0
     local project_root
-    project_root="$(git rev-parse --show-toplevel 2>/dev/null)" || project_root="$(pwd)"
+    project_root="$(resolve_project_root)"
     [[ -f "$project_root/$NO_SYNC_MARKER" ]] && return 0
 
     local need_update=()
@@ -213,6 +288,9 @@ maybe_sync_claude_md() {
         fi
     fi
 }
+if (( ! show_help && ! show_list && ! show_context )); then
+    confirm_non_project_dir
+fi
 maybe_sync_claude_md
 
 # --list-versions: print and exit
@@ -258,6 +336,48 @@ if (( ! show_help )); then
     if [[ -f "$TITLE_FILE" ]]; then
         printf '\033[36m%s\033[0m\n' "$(cat "$TITLE_FILE")"
     fi
+fi
+
+# Migration notice: global_rules.md → global KB
+LEGACY_GLOBAL_RULES="$HOME/Notes/claude-registry/global_rules.md"
+if [[ -f "$LEGACY_GLOBAL_RULES" ]]; then
+    echo "claude-code: global_rules.md はグローバル KB に統合されました。" >&2
+    echo "  削除してください: rm $LEGACY_GLOBAL_RULES" >&2
+    echo "  ~/.claude/CLAUDE.md のインクルード行も不要です。" >&2
+fi
+
+# Dynamic context assembly: global KB → tmp/global_kb_context.md
+BUILD_CONTEXT_SCRIPT="$HOME/.claude/scripts/build_startup_context.py"
+CONTEXT_OUTPUT="tmp/global_kb_context.md"
+
+maybe_build_context() {
+    [[ -f "$BUILD_CONTEXT_SCRIPT" ]] || return 0
+    local project_root
+    project_root="$(resolve_project_root)"
+    local output_path="$project_root/$CONTEXT_OUTPUT"
+    mkdir -p "$(dirname "$output_path")"
+    python3 "$BUILD_CONTEXT_SCRIPT" "$project_root" > "$output_path" 2>/dev/null
+}
+
+if (( show_context )); then
+    if [[ -f "$BUILD_CONTEXT_SCRIPT" ]]; then
+        project_root="$(resolve_project_root)"
+        result=$(python3 "$BUILD_CONTEXT_SCRIPT" "$project_root" 2>/dev/null)
+        if [[ -n "$result" ]]; then
+            echo "$result"
+            echo "---"
+            echo "${#result} chars"
+        else
+            echo "(no matching global KB for this project)"
+        fi
+    else
+        echo "build_startup_context.py not found: $BUILD_CONTEXT_SCRIPT" >&2
+    fi
+    exit 0
+fi
+
+if (( ! no_context && ! show_help )); then
+    maybe_build_context
 fi
 
 if (( no_osc_tap )) || ! command -v osc-tap >/dev/null 2>&1; then

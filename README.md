@@ -9,11 +9,13 @@ CLAUDE.md / CLAUDE.local.md と周辺ツールの一式で、セッションを�
 - **記憶の永続化**: 作業履歴・ユーザー情報が自動でファイルに残り、次のセッションに引き継がれる。「はじめまして」から始まらない継続した関係
 - **タスク管理**: IDEAS → TODO → 実装ログ → 完了のライフサイクルで、セッションをまたぐ中長期タスクを管理
 - **ナレッジベース**: 調査結果を KB に蓄積し、プロジェクトの知見を永続化
+- **グローバル KB**: プロジェクト横断の知見を registry に蓄積し、起動時にプロジェクトの関心タグにマッチしたものだけを自動注入
 - **セッション引き継ぎ**: 進行中の作業状態をファイルに残して、次のセッションでスムーズに再開
 - **プロジェクト間連携**: inbox を使って別プロジェクトの Claude に依頼を送信、自動処理して結果を受け取る非同期メッセージング。マルチPC対応
 - **定期洞察（insight）**: プロジェクトの状態を自動分析し、TODO/IDEAS の整理提案・知見抽出・横断的な気づきをレポート
 - **自動バックアップ**: セッション終了時に記憶・タスク管理・設定ファイルを registry に自動バックアップ。次のセッション開始時に整合性チェック
 - **ステータスライン**: コンテキスト使用率、rate limits、IDEAS/TODO/inbox 件数をリアルタイム表示
+- **時報**: 毎ターン現在日時を注入。時間帯に応じた挨拶や、深夜帯の作業抑制などの行動規範に反映
 - **人格システム**: 多数の人格サンプルをもとに、口調・性格・フレーバーを自由に組み合わせて人格を提案。既存プロジェクトで使っている人格の分布を踏まえて、被らない方向も自動で提案
 - **マルチPC自動同期**: claude-code ラッパーが起動時に設定の更新を検知し、自動インストール。CLAUDE.md / CLAUDE.local.md も自動配置・更新確認
 
@@ -25,8 +27,11 @@ CLAUDE.md / CLAUDE.local.md と周辺ツールの一式で、セッションを�
 | **uv** | Python ツール管理 | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | **ccexport** | セッション情報取得・ログエクスポート | `uv tool install git+https://github.com/yosagi/ccexport.git` |
 | **osc-tap** | OSC シーケンスキャプチャ（任意） | `uv tool install git+https://github.com/yosagi/osc-tap.git` |
+| **ファイル同期システム** | `~/Notes/claude-registry/` のPC間同期（複数PC利用時） | Syncthing / Dropbox 等、任意のもの |
 
-`bootstrap.sh` を使えばこれらの導入からグローバル設定まで一括で行えます。
+`bootstrap.sh` を使えばこれらの導入からグローバル設定まで一括で行えます（ファイル同期システムを除く）。
+
+registry（`~/Notes/claude-registry/`）はセッション情報・バックアップ・グローバル KB などの置き場で、1台で使う場合は単なるローカルディレクトリとして動作します。複数PCで使う場合は Syncthing 等でPC間同期することで、設定の自動配布・プロジェクト間連携・グローバル KB の共有がPCをまたいで機能します。
 
 ## セットアップ
 
@@ -39,12 +44,11 @@ CLAUDE.md / CLAUDE.local.md と周辺ツールの一式で、セッションを�
 
 これで以下がインストールされます：
 - 依存ツール（jq, ccexport, osc-tap）
-- Skills（inbox, inbox-send, persona-setup, insight, stocktake, note-logger 等）
-- Hooks（SessionStart: registry 登録、SessionEnd: ログエクスポート・バックアップ・記憶ドラフト処理）
+- Skills（inbox, inbox-send, persona-setup, insight, stocktake, note-logger, global-kb 等）
+- Hooks（SessionStart: registry 登録、SessionEnd: ログエクスポート・バックアップ・記憶ドラフト処理、UserPromptSubmit: 時報）
 - Status Line（コンテキスト使用率・rate limits 表示）
 - Sandbox 例外設定、許可設定
-- claude-code ラッパー（osc-tap 経由の起動スクリプト、auto-install 機能付き）
-- グローバルルール（`~/.claude/CLAUDE.md` + `registry/global_rules.md`、初回のみ）
+- claude-code ラッパー（後述）と起動時コンテキスト組み立てスクリプト
 
 更新時も `bootstrap.sh` を再実行すれば最新化されます（`--force` でツールも再インストール）。
 既存の `~/.claude/settings.json` は自動的に `settings.json.bak` にバックアップされます。
@@ -107,6 +111,39 @@ scripts/insight-schedule.sh disable ~/work/myproject
 
 insight はプロジェクトの棚卸し（TODO/IDEAS の整理提案、実装ログの健全性チェック）、記憶ファイルの圧縮、会話ログの横断分析を行い、レポートを生成します。結果は inbox に通知され、次のセッションで `/insight-review` で処理できます。
 
+## claude-code ラッパー
+
+`claude` の代わりに使う起動ラッパーです。環境の同期からプロジェクトの初期配置までを起動時に済ませるため、常用を推奨します。起動時に以下を順に行います：
+
+1. **auto-install**: registry の dist が更新されていたら `setup_global.sh --install` を自動実行（マルチPC同期）
+2. **プロジェクトディレクトリガード**: cwd に `.claude/` と `reports/` が揃っていない場所での対話起動時は、意図しないプロジェクトの発生を防ぐため確認プロンプトを出す。新規プロジェクトとして続行する場合は、セッションログエクスポートの opt-in（`.claude/export_session` の作成）もその場で選択できる
+3. **CLAUDE.md / CLAUDE.local.md 同期**: 未配置なら dist から自動コピー、更新があれば対話的に確認（`.no-claude-md-sync` で無効化）
+4. **起動時コンテキスト組み立て**: グローバル KB から関心タグにマッチした知見を `tmp/global_kb_context.md` に書き出す（後述）
+5. **osc-tap 経由の起動**: OSC シーケンスをキャプチャし、セッションタイトルの記録などに利用。osc-tap 未インストール時や stdout が TTY でないとき（systemd service 等）は素の `claude` を直接起動
+
+ラッパー固有のオプション：
+
+| オプション | 動作 |
+|-----------|------|
+| `--list-versions` | インストール済み Claude Code バージョン一覧 |
+| `--enforce-version VERSION` | 指定バージョンで起動（regression 回避用） |
+| `--no-osc-tap` | osc-tap をバイパスして素の claude を起動 |
+| `--show-context` | 起動時コンテキストを表示して終了 |
+| `--no-context` | 起動時コンテキスト組み立てをスキップ |
+
+既知の問題があるバージョンはスクリプト内の `VERSION_BLACKLIST` に登録でき、該当バージョンがデフォルトで選ばれる場合は最新の問題ないバージョンに自動フォールバックします。
+
+## グローバル KB
+
+プロジェクト横断で再利用する知見を registry に蓄積し、各プロジェクトの関心にマッチしたものだけを起動時に自動注入する仕組みです。
+
+- 知見は `~/Notes/claude-registry/<ホスト名>/kb/*.md` に置き、frontmatter で `tags` と `inject`（`full`: 全文注入 / `index`: タイトル+パスのみ列挙）を指定する
+- 関心タグはホスト単位（`<ホスト名>/kb_interests`）とプロジェクト単位（`reports/project_context.md` の `kb_interests:`）で指定でき、両者の和が有効になる
+- claude-code ラッパーが起動時に `build_startup_context.py` でマッチした知見を `tmp/global_kb_context.md` に組み立て、CLAUDE.md の `@` インクルードで読み込まれる
+- 知見の記録・更新には `/global-kb` スキルを使う
+
+複数PCで registry を同期していれば、全ホストの `kb/` が横断的に読まれ、どのPCで記録した知見も共有されます（同名ファイルは mtime の新しい方を採用）。
+
 ## 設計方針
 
 ### ワークフローとデータの分離
@@ -120,11 +157,9 @@ insight はプロジェクトの棚卸し（TODO/IDEAS の整理提案、実装�
 | データ | `reports/project_context.md` | プロジェクトの目標・方針・規約 |
 | データ | `reports/personas/config.md` | 人格設定（口調・性格） |
 | データ | `reports/memory/` | 作業履歴・ユーザー情報 |
-| データ | `global_rules.md` | 全プロジェクト共通のルール |
+| データ | `registry/<ホスト名>/kb/` | プロジェクト横断の知見（グローバル KB） |
 
 ワークフロー側は claude-code-kit の更新で上書きでき、データ側はプロジェクトやユーザーごとに独立して管理されます。
-
-`global_rules.md` は全プロジェクト共通のルールを置くファイルで、`~/.claude/CLAUDE.md` から `@` インクルードされます。実体は `~/Notes/claude-registry/` に配置されます。`~/Notes/` を Syncthing 等でPC間同期していれば、ルールも自動的に共有されます。setup_global.sh は初回のみ空テンプレートを配置し、既存ファイルは上書きしません。
 
 ### ハードコードされたディレクトリ
 
@@ -132,7 +167,7 @@ insight はプロジェクトの棚卸し（TODO/IDEAS の整理提案、実装�
 
 | パス | 用途 |
 |------|------|
-| `~/Notes/claude-registry/` | セッション情報、バックアップ、ドラフト、グローバルルール。Syncthing 等でPC間同期する想定 |
+| `~/Notes/claude-registry/` | セッション情報、バックアップ、ドラフト、グローバル KB。Syncthing 等でPC間同期する想定 |
 | `~/Notes/journals/claude_sessions/` | 会話ログの出力先（opt-in） |
 | `<project>/reports/` | 記憶、タスク管理、inbox、insight 等のプロジェクトローカルデータ |
 | `~/.claude/osc-logs/` | osc-tap によるターミナルタイトルのキャプチャログ |
@@ -148,8 +183,10 @@ dist/
 │   │   ├── process_journal_drafts.sh # ドラフト→journals 追記
 │   │   ├── process_memory_drafts.sh  # 記憶ドラフト→work_history/diary 追記
 │   │   ├── append_memory_entry.py    # 記憶ファイルへの追記処理
-│   │   └── backup_project_state.sh   # reports/ バックアップ（session_end から起動）
+│   │   ├── backup_project_state.sh   # reports/ バックアップ（session_end から起動）
+│   │   └── time_awareness.sh         # 時報（UserPromptSubmit で現在日時を注入）
 │   ├── skills/
+│   │   ├── global-kb/               # グローバル KB への知見の記録・更新
 │   │   ├── inbox/                    # inbox 受信・既読・完了
 │   │   ├── inbox-send/              # inbox 送信・検索・自動処理起動
 │   │   ├── inbox-process/           # inbox 自動処理
@@ -162,14 +199,15 @@ dist/
 │   │   ├── note-logger/             # 経緯・背景の journals 記録
 │   │   └── work-logger/             # 作業ログの journals 記録
 │   ├── statusline.sh                # ステータスライン
-│   ├── global_rules.md              # グローバルルール テンプレート
 │   └── export_session/              # セッションログ opt-in フラグ（テンプレート）
 ├── scripts/
-│   ├── claude-code                  # 起動ラッパー（osc-tap、auto-install、CLAUDE.md 同期）
+│   ├── claude-code                  # 起動ラッパー（→「claude-code ラッパー」参照）
+│   ├── build_startup_context.py     # 起動時コンテキスト組み立て（グローバル KB 注入）
 │   └── insight-schedule.sh          # insight 定期実行の管理（systemd user timer）
 ├── CLAUDE.md                        # [プロジェクト] ワークフロー定義
 ├── CLAUDE.local.md                  # [プロジェクト] 人格セットアップ用（全プロジェクト同一）
 ├── work_in_progress.md              # [プロジェクト] 進行中の作業状態
+├── LICENSE
 ├── bootstrap.sh                     # 初期セットアップ（依存ツール + グローバル設定）
 ├── setup_global.sh                  # グローバル設定のインストーラ
 ├── install-skill.sh                 # スキル個別インストーラ
@@ -199,6 +237,8 @@ dist/
 mkdir -p .claude
 touch .claude/export_session
 ```
+
+新規プロジェクトを claude-code ラッパー経由で起動した場合は、プロジェクトディレクトリガードの確認プロンプトでこのフラグをその場で作成できます。
 
 出力先を変更する場合は `~/.claude/hooks/session_end.sh` の `SESSION_LOG_DIR` を編集してください。
 
