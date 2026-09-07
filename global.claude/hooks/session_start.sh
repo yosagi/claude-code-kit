@@ -89,9 +89,10 @@ register_project() {
     mkdir -p "$registry_dir"
 
     # パス付き project_title.txt を生成（1行目: タイトル, 2行目: 実パス）
+    # printf 経由にすることで、title_src が改行なしで終わっていても行が連結されない
     local tmpfile
     tmpfile=$(mktemp)
-    { head -1 "$title_src"; echo "$project_dir"; } > "$tmpfile"
+    printf '%s\n%s\n' "$(head -1 "$title_src")" "$project_dir" > "$tmpfile"
 
     # 差分があるときだけコピー（Syncthing の無駄な同期を避ける）
     if ! diff -q "$tmpfile" "$registry_dir/project_title.txt" >/dev/null 2>&1; then

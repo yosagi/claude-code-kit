@@ -6,6 +6,8 @@ allowed-tools:
   - Skill(stocktake)
   - Skill(memory-compact)
   - Skill(notia-search)
+  - Bash(notia status)
+  - Bash(notia schema)
   - Bash(~/.claude/skills/inbox-send/inbox-send.sh:*)
 ---
 
@@ -102,7 +104,22 @@ Skill ツールで `memory-compact` を呼び出す。圧縮が不要なら何�
 
 notia-search スキルが利用可能か確認する（スキル一覧に `notia-search` があるか）。
 
-**利用可能な場合**、以下の2種類の検索を Skill ツールで `notia-search` を呼び出して行う:
+**利用可能な場合**、まず索引の状態を確かめ、rebuild の完了を待ってから検索に入る。
+notia の索引はサーバ起動時に前回起動時のものがロードされ、起動直後から差分の rebuild が走る。
+rebuild 中に検索すると `index_built_at` 以前の文書しか返らないため、待たずに検索すると「会話ログが無い」と誤認する。
+
+1. `notia status` を実行する（JSON）
+2. `{"running": false}` なら `notia schema` を実行してサーバを起こす（約10秒）。再度 `notia status`
+3. `"status": "starting"` なら数秒待って再度 `notia status`
+4. `"rebuilding": true` の間は 10 秒間隔で `notia status` を見直す。`rebuilding` 系フィールドが消えたら索引は最新
+   - `rebuild_elapsed_sec` が **1800 を超えたら異常**とみなす。検索はスキップし、レポートの Phase 2-3 に
+     「rebuild が N 分進行中で完了しない」と記し、Phase 4 の提案に notia への確認依頼（inbox）を載せる
+5. 索引が最新になったら以下の検索に入る。レポートには `index_built_at` を一行添える（「会話ログ索引: YYYY-MM-DD HH:MM 時点」）
+
+`notia status` が異常でない限り、索引の到達点を理由に検索をスキップしない（「索引が止まっている」の判定は
+手順4の 1800 秒基準のみで行う）。
+
+以下の2種類の検索を Skill ツールで `notia-search` を呼び出して行う:
 
 (a) **このプロジェクトの最近のセッション**
 
@@ -128,6 +145,15 @@ notia-search に以下の趣旨で検索を依頼する:
 - 進行中の作業（work_in_progress.md）の状態コメント
 - 棚卸しで検出された実装済み候補への補足（会話ログからの裏付けなど）
 
+#### 3-1b. work_in_progress.md の整理提案
+
+work_in_progress.md は放置すると肥大化する。記載されている項目ごとに以下の基準で精査し、整理案を提案する（提案のみ。編集はしない）:
+
+1. **残す必要があるか**: 完了した作業・やらないことにした作業・別作業に移って中断したままの作業は削除（中断したものは TODO 化）を提案する。work_history.md、実装ログ、git log と突き合わせて判断する
+2. **記録済みなら参照に縮約**: 残す必要があっても、詳細が work_history.md や実装ログに記録済みであれば、概要1-2行 + 参照パスだけ残す形への縮約を提案する
+
+整理の必要がなければ「整理不要」と一言だけ記載する。
+
 #### 3-2. 会話ログからの知見（notia 利用時のみ）
 
 - KB に記録すべき知見の候補（具体的な内容と記録理由）
@@ -148,6 +174,7 @@ Phase 1.5 で実行したジョブの結果をまとめる。各ジョブの「�
 
 各発見に基づくアクション候補を整理する:
 - done/ に移動すべき項目（棚卸しの確認結果を踏まえて）
+- work_in_progress.md の整理（3-1b の結果）
 - 新規 TODO/IDEAS として記録すべき事項
 - KB に記録すべき知見
 - inbox で他プロジェクトに送るべき連絡
@@ -183,6 +210,13 @@ Phase 1.5 で実行したジョブの結果をまとめる。各ジョブの「�
 [最近の作業の方向性・ペースへのコメント]
 [進行中の作業への状態コメント]
 
+### work_in_progress.md の整理提案
+
+- **[項目名]**: 削除提案（完了済み、work_history YYYY-MM-DD に記録あり）
+- **[項目名]**: 参照への縮約提案（詳細は `reports/tasks/...` に記録済み）
+
+（整理不要なら「整理不要」と1行）
+
 ## 会話ログからの知見
 
 ### KB 記録候補
@@ -208,7 +242,7 @@ Phase 1.5 で実行したジョブの結果をまとめる。各ジョブの「�
 
 優先度順に整理:
 
-1. [アクション内容]（種別: done移動 / 新規TODO / KB記録 / inbox / ルール反映）
+1. [アクション内容]（種別: done移動 / wip整理 / 新規TODO / KB記録 / inbox / ルール反映）
 2. ...
 ```
 

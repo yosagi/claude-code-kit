@@ -20,7 +20,10 @@ Commands:
   logs <project-path> [-f]                    実行ログを表示
 
 Schedule spec:
-  weekly    毎週月曜 3:00（デフォルト）
+  weekly    週次の空き枠に自動割り当て（デフォルト）。
+            枠は 日曜/月曜/土曜/火曜/水曜/木曜/金曜 の 3:00、1枠最大3件。
+            session limit の5時間ウィンドウを複数プロジェクトの insight が
+            食い潰さないよう、同一枠への詰め込みを制限する
   daily     毎日 3:00
   <cron式>  OnCalendar 形式（例: "Mon *-*-* 03:00:00"）
 
@@ -63,14 +66,45 @@ resolve_project_path() {
     echo "$path"
 }
 
-# スケジュール指定を OnCalendar 形式に変換
+# スケジュール指定を OnCalendar 形式に変換（weekly は assign_weekly_slot が担当）
 resolve_schedule() {
     local spec="${1:-weekly}"
     case "$spec" in
-        weekly)  echo "Mon *-*-* 03:00:00" ;;
         daily)   echo "*-*-* 03:00:00" ;;
         *)       echo "$spec" ;;
     esac
+}
+
+# 週次スケジュールの枠割り当て
+# 1枠あたり最大 SLOT_CAPACITY 件。同一の5時間 session limit ウィンドウを
+# 複数の insight が食い潰して後半の実行が枯渇するのを防ぐ（2026-07/08 の実障害）。
+# 既存タイマー（自ユニットを除く）の OnCalendar を数え、空きのある最初の枠を返す。
+SLOT_CAPACITY=3
+WEEKLY_SLOT_DAYS=(Sun Mon Sat Tue Wed Thu Fri)
+
+assign_weekly_slot() {
+    local own_unit="$1"
+    local day slot count timer_file
+    for day in "${WEEKLY_SLOT_DAYS[@]}"; do
+        slot="${day} *-*-* 03:00:00"
+        count=0
+        for timer_file in "$SYSTEMD_DIR"/${UNIT_PREFIX}-*.timer; do
+            [[ -f "$timer_file" ]] || continue
+            if [[ "$(basename "$timer_file")" == "${UNIT_PREFIX}-${own_unit}.timer" ]]; then
+                continue
+            fi
+            if grep -qxF "OnCalendar=${slot}" "$timer_file"; then
+                count=$((count + 1))
+            fi
+        done
+        if (( count < SLOT_CAPACITY )); then
+            echo "$slot"
+            return
+        fi
+    done
+    # 全枠満杯（21件超）。最終枠に入れて警告する
+    echo "WARNING: 全枠が満杯です。${WEEKLY_SLOT_DAYS[-1]} 枠に追加しますが、枠設計の見直しを推奨します" >&2
+    echo "${WEEKLY_SLOT_DAYS[-1]} *-*-* 03:00:00"
 }
 
 # claude コマンドのパスを取得
@@ -111,7 +145,12 @@ cmd_enable() {
     [[ ! -d "$project_path" ]] && { echo "ERROR: ディレクトリが存在しません: $project_path" >&2; exit 1; }
 
     local unit_name="$(path_to_unit_name "$project_path")"
-    local on_calendar="$(resolve_schedule "$schedule_spec")"
+    local on_calendar
+    if [[ "$schedule_spec" == "weekly" ]]; then
+        on_calendar="$(assign_weekly_slot "$unit_name")"
+    else
+        on_calendar="$(resolve_schedule "$schedule_spec")"
+    fi
     local claude_cmd="$(find_claude)"
 
     mkdir -p "$SYSTEMD_DIR"
@@ -128,6 +167,9 @@ ExecStart=${claude_cmd} -p --permission-mode acceptEdits "/insight"
 Environment=HOME=${HOME}
 # タイムアウト: insight は時間がかかる場合がある
 TimeoutStartSec=1800
+# SessionEnd hook が setsid で切り離す session_end.sh ワーカーを、claude 終了時の
+# cgroup 掃除（既定 KillMode=control-group）で巻き添えにしない。main process のみ kill する
+KillMode=process
 SERVICEEOF
 
     # .timer ファイルを生成

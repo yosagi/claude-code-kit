@@ -7,6 +7,7 @@
 #
 # 起動時に ~/Notes/claude-registry/dist/.dist-stamp が更新されていたら
 # setup_global.sh --install を自動実行する（auto-install）。
+# auto-install で wrapper 自身が更新された場合は起動せず終了する（要再起動）。
 #
 # CLAUDE.md / CLAUDE.local.md がなければ dist から自動配置、
 # 更新があれば対話的に確認する。.no-claude-md-sync を置くと同期しない。
@@ -61,7 +62,12 @@ used instead. --enforce-version bypasses the blacklist.
 
 Auto-install: if ~/Notes/claude-registry/dist/.dist-stamp differs from
 ~/.claude/.dist-stamp, setup_global.sh --install runs automatically
-before launching claude. Output is logged to ~/.claude/auto-install.log.
+before launching claude. The same applies to each distribution route
+under ~/Notes/claude-registry/dist-extras/<route>/ (.extras-stamp vs
+~/.claude/extras-stamps/<route>).
+Output is logged to ~/.claude/auto-install.log.
+If the wrapper itself is updated by the install, it exits without
+launching claude — run claude-code again to use the new wrapper.
 
 Project directory guard: when launched interactively in a directory that
 does not have both .claude/ and reports/ (cwd only, no parent traversal),
@@ -183,24 +189,69 @@ if [[ ! -t 1 ]]; then
     no_osc_tap=1
 fi
 
-# Auto-install: if registry dist has a newer stamp, run setup_global.sh --install.
+# Auto-install: if registry dist (or any dist-extras route) has a newer stamp,
+# run setup_global.sh --install.
 REGISTRY_DIST="$HOME/Notes/claude-registry/dist"
 REGISTRY_STAMP="$REGISTRY_DIST/.dist-stamp"
 LOCAL_STAMP="$HOME/.claude/.dist-stamp"
+EXTRAS_DIR="$HOME/Notes/claude-registry/dist-extras"
+EXTRAS_STAMP_DIR="$HOME/.claude/extras-stamps"
+
+# dist-extras の各経路の stamp を照合する。
+# 1つでも差分があれば 0 を返す（extras 側のローカル stamp は setup_global.sh が更新する）。
+extras_need_install() {
+    [[ -d "$EXTRAS_DIR" ]] || return 1
+    local route_dir route registry_stamp local_stamp
+    for route_dir in "$EXTRAS_DIR"/*/; do
+        [[ -f "$route_dir/.extras-stamp" ]] || continue
+        route="$(basename "$route_dir")"
+        registry_stamp="$(cat "$route_dir/.extras-stamp" 2>/dev/null)"
+        local_stamp="$(cat "$EXTRAS_STAMP_DIR/$route" 2>/dev/null)"
+        if [[ "$registry_stamp" != "$local_stamp" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
 
 maybe_auto_install() {
-    [[ -f "$REGISTRY_STAMP" ]] || return 0
-    local registry_stamp local_stamp
-    registry_stamp="$(cat "$REGISTRY_STAMP" 2>/dev/null)" || return 0
-    local_stamp="$(cat "$LOCAL_STAMP" 2>/dev/null)"
-    [[ "$registry_stamp" == "$local_stamp" ]] && return 0
+    local registry_stamp local_stamp dist_changed=0
+    if [[ -f "$REGISTRY_STAMP" ]]; then
+        registry_stamp="$(cat "$REGISTRY_STAMP" 2>/dev/null)" || registry_stamp=""
+        local_stamp="$(cat "$LOCAL_STAMP" 2>/dev/null)"
+        if [[ -n "$registry_stamp" && "$registry_stamp" != "$local_stamp" ]]; then
+            dist_changed=1
+        fi
+    fi
+
+    if (( ! dist_changed )) && ! extras_need_install; then
+        return 0
+    fi
+
+    # extras だけの更新でもインストールはキット側のスクリプトが担う
+    [[ -x "$REGISTRY_DIST/setup_global.sh" ]] || return 0
+
+    # wrapper 自身が更新されるかを事前に判定しておく
+    # （setup_global.sh は atomic (mv) で置き換えるため実行中の bash は壊れないが、
+    #   新しい wrapper のロジックはこのプロセスには反映されないので再起動を促す）
+    local wrapper_will_update=0
+    if [[ -f "$REGISTRY_DIST/scripts/claude-code" ]] && \
+       ! diff -q "$REGISTRY_DIST/scripts/claude-code" "$HOME/.local/bin/claude-code" >/dev/null 2>&1; then
+        wrapper_will_update=1
+    fi
 
     local log_file="$HOME/.claude/auto-install.log"
     echo "claude-code: dist updated, auto-installing..." >&2
     if "$REGISTRY_DIST/setup_global.sh" --install > "$log_file" 2>&1; then
-        mkdir -p "$(dirname "$LOCAL_STAMP")"
-        cp "$REGISTRY_STAMP" "$LOCAL_STAMP"
+        if [[ -f "$REGISTRY_STAMP" ]]; then
+            mkdir -p "$(dirname "$LOCAL_STAMP")"
+            cp "$REGISTRY_STAMP" "$LOCAL_STAMP"
+        fi
         echo "claude-code: auto-install complete (log: $log_file)" >&2
+        if (( wrapper_will_update )); then
+            echo "claude-code: wrapper 自身が更新されました。再度 claude-code を起動してください" >&2
+            exit 0
+        fi
     else
         echo "claude-code: auto-install failed (log: $log_file)" >&2
     fi

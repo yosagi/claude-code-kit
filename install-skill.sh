@@ -1,20 +1,93 @@
 #!/bin/bash
 # スキルインストーラー
 # Usage: install-skill.sh <skill-dir>
+#        install-skill.sh --uninstall <skill-name>
 #
-# 1. 指定したスキルを ~/.claude/skills/ にコピー
-# 2. *.sh があれば settings.json の excludedCommands に追加
+# インストール:
+#   1. 指定したスキルを ~/.claude/skills/ にコピー
+#   2. *.sh があれば settings.json の excludedCommands に追加
+#
+# アンインストール:
+#   1. ~/.claude/skills/<name>/ を削除
+#   2. そのスキルが登録した excludedCommands のエントリを除去
 
 set -euo pipefail
 
-SKILL_SOURCE="$1"
-SKILL_NAME=$(basename "$SKILL_SOURCE")
-DEST_DIR="$HOME/.claude/skills/$SKILL_NAME"
 SETTINGS_FILE="$HOME/.claude/settings.json"
+SKILLS_ROOT="$HOME/.claude/skills"
+
+usage() {
+    echo "Usage: $0 <skill-dir>" >&2
+    echo "       $0 --uninstall <skill-name>" >&2
+}
+
+# jq が必要（両モード共通）
+if ! command -v jq &> /dev/null; then
+    echo "Error: jq is required but not installed" >&2
+    exit 1
+fi
+
+# excludedCommands から指定スキルのエントリを除去する
+remove_excluded_commands() {
+    local skill_name="$1"
+    local prefix="~/.claude/skills/$skill_name/"
+
+    [[ -f "$SETTINGS_FILE" ]] || return 0
+
+    local removed
+    removed=$(jq -r --arg p "$prefix" '
+        [(.sandbox.excludedCommands // [])[] | select(startswith($p))] | length
+    ' "$SETTINGS_FILE")
+
+    if [[ "$removed" -eq 0 ]]; then
+        return 0
+    fi
+
+    local temp_file
+    temp_file=$(mktemp)
+    jq --arg p "$prefix" '
+        .sandbox.excludedCommands = [(.sandbox.excludedCommands // [])[] | select(startswith($p) | not)]
+    ' "$SETTINGS_FILE" > "$temp_file"
+    mv "$temp_file" "$SETTINGS_FILE"
+
+    echo "  Removed from excludedCommands: $removed entries"
+}
+
+# --uninstall モード
+if [[ "${1:-}" == "--uninstall" ]]; then
+    SKILL_NAME="${2:-}"
+    if [[ -z "$SKILL_NAME" ]]; then
+        usage
+        exit 1
+    fi
+    # パス区切りを含む名前は受け付けない（誤爆防止）
+    if [[ "$SKILL_NAME" == */* || "$SKILL_NAME" == "." || "$SKILL_NAME" == ".." ]]; then
+        echo "Error: invalid skill name: $SKILL_NAME" >&2
+        exit 1
+    fi
+
+    TARGET_DIR="$SKILLS_ROOT/$SKILL_NAME"
+    if [[ ! -d "$TARGET_DIR" ]]; then
+        # 既に無い場合も excludedCommands の残骸だけ掃除して正常終了
+        remove_excluded_commands "$SKILL_NAME"
+        exit 0
+    fi
+
+    echo "Uninstalling skill: $SKILL_NAME"
+    rm -rf "$TARGET_DIR"
+    echo "  Removed: $TARGET_DIR"
+    remove_excluded_commands "$SKILL_NAME"
+    echo "Done!"
+    exit 0
+fi
+
+SKILL_SOURCE="${1:-}"
+SKILL_NAME=$(basename "$SKILL_SOURCE")
+DEST_DIR="$SKILLS_ROOT/$SKILL_NAME"
 
 # 引数チェック
 if [[ -z "$SKILL_SOURCE" ]]; then
-    echo "Usage: $0 <skill-dir>" >&2
+    usage
     exit 1
 fi
 
@@ -23,16 +96,10 @@ if [[ ! -d "$SKILL_SOURCE" ]]; then
     exit 1
 fi
 
-# jq が必要
-if ! command -v jq &> /dev/null; then
-    echo "Error: jq is required but not installed" >&2
-    exit 1
-fi
-
 echo "Installing skill: $SKILL_NAME"
 
 # 1. スキルをコピー
-mkdir -p "$HOME/.claude/skills"
+mkdir -p "$SKILLS_ROOT"
 if [[ -d "$DEST_DIR" ]]; then
     echo "  Updating existing skill..."
     rm -rf "$DEST_DIR"

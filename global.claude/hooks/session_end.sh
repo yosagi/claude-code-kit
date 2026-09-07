@@ -11,6 +11,26 @@ SETTINGS_FILE="$HOME/.claude/settings.json"
 SESSION_LOG_DIR="$HOME/Notes/journals/claude_sessions"
 REGISTRY_BASE="$HOME/Notes/claude-registry"
 
+# 自分自身の絶対パス（ワーカーの再起動と hook のコピーに使う）
+SELF="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+
+# ワーカーのログ。失敗が痕跡として残るようにする
+WORKER_LOG="$HOME/.claude/session_end_worker.log"
+WORKER_LOG_MAX_BYTES=$((1024 * 1024))
+
+# 孤児リカバリで無視する更新間隔（分）
+# まだ生きているセッションの残骸を横取りしないためのガード
+ORPHAN_MIN_AGE_MIN=10
+
+# 孤児リカバリを諦める経過日数
+# Claude Code の会話ログ保持期間（30日）を過ぎた残骸は export が成功する見込みがないため、
+# リトライせず .claude/work-logger_stale/ に退避する
+ORPHAN_GIVEUP_DAYS=30
+STALE_DIR_NAME="work-logger_stale"
+
+# ログ行の識別子（ワーカー起動時に設定）
+WORKER_SESSION_ID="-"
+
 show_help() {
     cat << EOF
 Usage: $SCRIPT_NAME [OPTIONS]
@@ -23,10 +43,13 @@ Options:
   --status             インストール状態を確認
   --session-log-dir    セッションログの出力先ディレクトリを表示
   --prepare <ID>       work-logger 用: ファイル名を生成し一時ファイルに書き込む
+  --worker <ID> [DIR]  内部用: 実処理を行うデタッチ済みワーカー
   --help               このヘルプを表示
 
 通常実行（hook として）:
-  標準入力から JSON を読み取り、ccexport で会話ログをエクスポートします。
+  標準入力から JSON を読み取り、setsid で切り離したワーカーに処理を委譲します。
+  ワーカーが ccexport で会話ログをエクスポートします。
+  ワーカーのログ: $WORKER_LOG
   出力先: $SESSION_LOG_DIR/claude_<YYYY-MM-DD>_<session_id先頭8文字>.org
 
   opt-in 方式:
@@ -72,7 +95,7 @@ do_install() {
     # スクリプトをコピー
     local target="$HOOKS_DIR/$SCRIPT_NAME"
     echo "  コピー: $target"
-    cp "$0" "$target"
+    cp "$SELF" "$target"
     chmod +x "$target"
 
     # settings.json を編集
@@ -235,7 +258,33 @@ path_to_dirname() {
     echo "${path#$HOME/}" | sed 's|/|-|g; s|\.|-|g'
 }
 
+# ワーカーのログ出力（stdout/stderr は起動側でログファイルに向けられている）
+log_worker() {
+    printf '%s [%s] %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$WORKER_SESSION_ID" "$*" >&2
+}
+
+# ワーカーログが肥大化したらローテートする
+rotate_worker_log() {
+    [[ -f "$WORKER_LOG" ]] || return 0
+    local size
+    size=$(stat -c %s "$WORKER_LOG" 2>/dev/null || echo 0)
+    if [[ "$size" -gt "$WORKER_LOG_MAX_BYTES" ]]; then
+        mv -f "$WORKER_LOG" "$WORKER_LOG.1"
+    fi
+}
+
+# registry の sessions ディレクトリのパスを返す
+registry_sessions_dir() {
+    local project_dir="$1"
+    local hostname
+    hostname=$(hostname)
+    local dir_name
+    dir_name=$(path_to_dirname "$project_dir")
+    echo "$REGISTRY_BASE/$hostname/$dir_name/sessions"
+}
+
 # ダイジェスト JSON を registry/sessions/ に書き出す
+# 成功したときだけ digest ファイルを削除する（途中死したら次回リトライされる）
 write_session_digest() {
     local session_id="$1"
     local project_dir="$2"
@@ -248,24 +297,25 @@ write_session_digest() {
 
     local digest
     digest=$(cat "$digest_file")
-    rm -f "$digest_file"
 
-    # 空なら書き出さない
+    # 空なら書き出さずに片付ける
     if [[ -z "$digest" ]]; then
+        rm -f "$digest_file"
         return 0
     fi
 
     # ccexport session-info --verbose で start/end を取得
-    local session_info
+    # 失敗しても digest 本文だけは必ず書き出す
+    local session_info=""
     if ! session_info=$(ccexport session-info -s "$session_id" --json --verbose 2>/dev/null); then
-        # session-info が失敗した場合は start/end なしで書き出す
         session_info=""
+        log_worker "session-info failed: $session_id (digest only)"
     fi
 
     local project_name
     project_name=$(basename "$project_dir")
 
-    local start_time end_time turn_count total_duration_ms session_type
+    local start_time="" end_time="" turn_count="" total_duration_ms="" session_type=""
     if [[ -n "$session_info" ]]; then
         start_time=$(echo "$session_info" | jq -r '.start_time // empty')
         end_time=$(echo "$session_info" | jq -r '.end_time // empty')
@@ -274,25 +324,21 @@ write_session_digest() {
         session_type=$(echo "$session_info" | jq -r '.session_type // empty')
     fi
 
-    # registry のパスを構築
-    local hostname
-    hostname=$(hostname)
-    local dir_name
-    dir_name=$(path_to_dirname "$project_dir")
-    local sessions_dir="$REGISTRY_BASE/$hostname/$dir_name/sessions"
-
+    local sessions_dir
+    sessions_dir=$(registry_sessions_dir "$project_dir")
     mkdir -p "$sessions_dir"
 
-    # JSON を書き出す
+    # 一時ファイルに書いてから mv する（途中死しても 0 バイトファイルが残らない）
     local json_file="$sessions_dir/${session_id}_meta.json"
-    jq -n \
+    local tmp_file="${json_file}.tmp.$$"
+    if jq -n \
         --arg sid "$session_id" \
         --arg proj "$project_name" \
-        --arg start "${start_time:-}" \
-        --arg end_time "${end_time:-}" \
-        --arg turns "${turn_count:-}" \
-        --arg duration "${total_duration_ms:-}" \
-        --arg stype "${session_type:-}" \
+        --arg start "$start_time" \
+        --arg end_time "$end_time" \
+        --arg turns "$turn_count" \
+        --arg duration "$total_duration_ms" \
+        --arg stype "$session_type" \
         --arg digest "$digest" \
         '{
             session_id: $sid,
@@ -304,7 +350,15 @@ write_session_digest() {
         + (if $end_time != "" then {"end": $end_time} else {} end)
         + (if $turns != "" then {turns: ($turns | tonumber)} else {} end)
         + (if $duration != "" and $duration != "null" then {total_duration_ms: ($duration | tonumber)} else {} end)
-        ' > "$json_file"
+        ' > "$tmp_file" && [[ -s "$tmp_file" ]]; then
+        mv -f "$tmp_file" "$json_file"
+        rm -f "$digest_file"
+        return 0
+    fi
+
+    rm -f "$tmp_file"
+    log_worker "meta write failed: $session_id (digest kept for retry)"
+    return 1
 }
 
 # 会話ログ JSON を registry/sessions/ に書き出す
@@ -312,31 +366,142 @@ write_session_log() {
     local session_id="$1"
     local project_dir="$2"
 
-    # registry のパスを構築
-    local hostname
-    hostname=$(hostname)
-    local dir_name
-    dir_name=$(path_to_dirname "$project_dir")
-    local sessions_dir="$REGISTRY_BASE/$hostname/$dir_name/sessions"
-
+    local sessions_dir
+    sessions_dir=$(registry_sessions_dir "$project_dir")
     mkdir -p "$sessions_dir"
 
     local log_file="$sessions_dir/${session_id}_log.json"
 
-    # 既に存在すればスキップ
-    if [[ -f "$log_file" ]]; then
+    # 既に中身のあるものが存在すればスキップ
+    if [[ -s "$log_file" ]]; then
         return 0
     fi
 
-    # ccexport で JSON 形式でエクスポート（osc-tap ログがあればタイトルも含める）
-    # --titles-dir はログ全走査で数秒かかるため nohup+disown で切り離す
+    # osc-tap ログがあればタイトルも含める
     local titles_args=()
     if [[ -d "$HOME/.claude/osc-logs" ]]; then
         titles_args=(--titles-dir "$HOME/.claude/osc-logs/")
     fi
-    nohup ccexport export -s "$session_id" -o "$log_file" -f json \
-        "${titles_args[@]}" >/dev/null 2>&1 &
-    disown
+
+    local tmp_file="${log_file}.tmp.$$"
+    if ccexport export -s "$session_id" -o "$tmp_file" -f json \
+        "${titles_args[@]}" >/dev/null 2>&1 && [[ -s "$tmp_file" ]]; then
+        mv -f "$tmp_file" "$log_file"
+        return 0
+    fi
+
+    rm -f "$tmp_file"
+    log_worker "log export failed: $session_id"
+    return 1
+}
+
+# 会話ログを org 形式で journals にエクスポートする
+# 成功したときだけ work-logger のマーカーファイルを削除する
+export_session_org() {
+    local session_id="$1"
+    local project_dir="$2"
+
+    # opt-in チェック: .claude/export_session がなければ何もしない
+    if [[ ! -f "$project_dir/.claude/export_session" ]]; then
+        return 0
+    fi
+
+    # work-logger が指定したファイル名があれば使う
+    local work_logger_file="$project_dir/.claude/work-logger_${session_id}.txt"
+    local output_file=""
+    if [[ -f "$work_logger_file" ]]; then
+        output_file=$(cat "$work_logger_file")
+    fi
+
+    if [[ -z "$output_file" ]]; then
+        local project_name short_id date_str
+        project_name=$(basename "$project_dir")
+        short_id="${session_id:0:8}"
+        date_str=$(date '+%Y-%m-%d')
+        output_file="$SESSION_LOG_DIR/${project_name}_${date_str}_${short_id}.org"
+    fi
+
+    mkdir -p "$(dirname "$output_file")"
+
+    local titles_args=()
+    if [[ -d "$HOME/.claude/osc-logs" ]]; then
+        titles_args=(--titles-dir "$HOME/.claude/osc-logs/")
+    fi
+
+    local tmp_file="${output_file}.tmp.$$"
+    if ccexport export -s "$session_id" -o "$tmp_file" -f org \
+        "${titles_args[@]}" >/dev/null 2>&1 && [[ -s "$tmp_file" ]]; then
+        mv -f "$tmp_file" "$output_file"
+        rm -f "$work_logger_file"
+        return 0
+    fi
+
+    rm -f "$tmp_file"
+    log_worker "org export failed: $session_id (marker kept for retry)"
+    return 1
+}
+
+# ORPHAN_GIVEUP_DAYS より古い残骸を .claude/work-logger_stale/ に退避する
+# 戻り値 0: 退避した（呼び出し側はリトライしない）、1: まだ新しい
+retire_orphan_if_stale() {
+    local project_dir="$1"
+    local f="$2"
+    local kind="$3"   # ログ用: digest / org marker
+
+    if [[ -z "$(find "$f" -maxdepth 0 -type f -mtime "+$ORPHAN_GIVEUP_DAYS" 2>/dev/null)" ]]; then
+        return 1
+    fi
+
+    local stale_dir="$project_dir/.claude/$STALE_DIR_NAME"
+    mkdir -p "$stale_dir"
+    if mv -f "$f" "$stale_dir/"; then
+        log_worker "retire stale orphan $kind (>${ORPHAN_GIVEUP_DAYS}d): $(basename "$f") -> .claude/$STALE_DIR_NAME/"
+    else
+        log_worker "failed to retire stale orphan $kind: $f"
+    fi
+    return 0
+}
+
+# 前回以前のセッションで処理しきれなかった残骸をリトライする
+# ORPHAN_MIN_AGE_MIN 以内に更新されたものは、まだ生きているセッションの分を
+# 横取りしないためスキップする
+# ORPHAN_GIVEUP_DAYS より古いものはリトライせず退避する（会話ログが消えていて成功しない）
+recover_orphans() {
+    local project_dir="$1"
+    local current_session="$2"
+    local f base sid
+
+    while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        base=$(basename "$f")
+        sid=${base#work-logger-}
+        sid=${sid%_digest.txt}
+        if [[ "$sid" == "$current_session" ]]; then
+            continue
+        fi
+        if retire_orphan_if_stale "$project_dir" "$f" "digest"; then
+            continue
+        fi
+        log_worker "recover orphan digest: $sid"
+        write_session_digest "$sid" "$project_dir" || true
+    done < <(find "$project_dir/reports/memory" -maxdepth 1 -type f \
+        -name 'work-logger-*_digest.txt' -mmin "+$ORPHAN_MIN_AGE_MIN" 2>/dev/null)
+
+    while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        base=$(basename "$f")
+        sid=${base#work-logger_}
+        sid=${sid%.txt}
+        if [[ "$sid" == "$current_session" ]]; then
+            continue
+        fi
+        if retire_orphan_if_stale "$project_dir" "$f" "org marker"; then
+            continue
+        fi
+        log_worker "recover orphan org export: $sid"
+        export_session_org "$sid" "$project_dir" || true
+    done < <(find "$project_dir/.claude" -maxdepth 1 -type f \
+        -name 'work-logger_*.txt' -mmin "+$ORPHAN_MIN_AGE_MIN" 2>/dev/null)
 }
 
 resolve_project_dir() {
@@ -366,6 +531,90 @@ resolve_project_dir() {
     return 1
 }
 
+# 実処理を行うワーカー（setsid で切り離されて実行される）
+do_worker() {
+    local session_id="$1"
+    local project_dir="${2:-}"
+
+    if [[ -z "$session_id" ]]; then
+        log_worker "no session_id given"
+        exit 1
+    fi
+    WORKER_SESSION_ID="${session_id:0:8}"
+
+    # 依存が揃っていなければ静かに終了
+    if ! command -v ccexport >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+        log_worker "missing dependencies (ccexport/jq)"
+        exit 0
+    fi
+
+    # プロジェクトルートを解決
+    if [[ -z "$project_dir" ]]; then
+        if ! project_dir=$(resolve_project_dir "$session_id"); then
+            log_worker "could not resolve project dir"
+            exit 0
+        fi
+    fi
+
+    # 同一プロジェクトのワーカーが重ならないようにする
+    local lock_file="$project_dir/.claude/session_end_worker.lock"
+    if [[ -d "$project_dir/.claude" && -w "$project_dir/.claude" ]]; then
+        exec 9>"$lock_file"
+        flock -w 600 9 2>/dev/null || log_worker "lock not acquired, proceeding"
+    fi
+
+    # work-logger が動いたセッションかどうか
+    # --prepare が置くマーカーか、work-logger スキルが書く digest のどちらかがあれば「動いた」
+    # 動いていないセッション（headless の insight、work-logger を回さずに閉じた対話セッション）は
+    # 終了処理をしていないので、会話ログ JSON とバックアップだけ残して他はスキップする
+    local work_logger_ran=0
+    if [[ -f "$project_dir/.claude/work-logger_${session_id}.txt" \
+       || -f "$project_dir/reports/memory/work-logger-${session_id}_digest.txt" ]]; then
+        work_logger_ran=1
+    fi
+
+    if (( work_logger_ran )); then
+        log_worker "start: $project_dir"
+    else
+        log_worker "start (light, no work-logger): $project_dir"
+    fi
+
+    # ダイジェスト JSON を registry に書き出す（opt-in 不要、digest がなければ何もしない）
+    if (( work_logger_ran )); then
+        write_session_digest "$session_id" "$project_dir" || true
+    fi
+
+    # 会話ログ JSON を registry に書き出す（opt-in 不要、ccdash が読む）
+    write_session_log "$session_id" "$project_dir" || true
+
+    # ドラフトファイルがあれば journals に追記（追記許可ホストのみ）
+    if (( work_logger_ran )); then
+        local process_drafts_script
+        process_drafts_script="$(dirname "$SELF")/process_journal_drafts.sh"
+        if [[ -x "$process_drafts_script" ]]; then
+            "$process_drafts_script" || log_worker "process_journal_drafts.sh failed"
+        fi
+    fi
+
+    # プロジェクト状態を registry にバックアップ（work-logger の有無を問わず実行）
+    local backup_script
+    backup_script="$(dirname "$SELF")/backup_project_state.sh"
+    if [[ -x "$backup_script" ]]; then
+        "$backup_script" "$project_dir" "$session_id" >/dev/null 2>&1 \
+            || log_worker "backup_project_state.sh failed"
+    fi
+
+    if (( work_logger_ran )); then
+        # 会話ログを org 形式で journals にエクスポート（opt-in のみ）
+        export_session_org "$session_id" "$project_dir" || true
+
+        # 前回以前のセッションの残骸をリトライ
+        recover_orphans "$project_dir" "$session_id" || true
+    fi
+
+    log_worker "done"
+}
+
 run_hook() {
     # 標準入力から JSON を読み取り
     local input
@@ -380,77 +629,15 @@ run_hook() {
         exit 1
     fi
 
-    # プロジェクトルートを解決
-    local project_dir
-    if ! project_dir=$(resolve_project_dir "$session_id"); then
-        # プロジェクトルートが特定できない場合はスキップ
-        exit 0
-    fi
+    rotate_worker_log
 
-    # ダイジェスト JSON を registry に書き出す（opt-in 不要）
-    write_session_digest "$session_id" "$project_dir"
-
-    # 会話ログ JSON を registry に書き出す（opt-in 不要）
-    write_session_log "$session_id" "$project_dir"
-
-    # ドラフトファイルがあれば journals に追記（追記許可ホストのみ）
-    local process_drafts_script
-    process_drafts_script="$(dirname "$0")/process_journal_drafts.sh"
-    if [[ -x "$process_drafts_script" ]]; then
-        "$process_drafts_script" || true
-    fi
-
-    # プロジェクト状態を registry にバックアップ（nohup+disown で切り離し）
-    local backup_script
-    backup_script="$(dirname "$0")/backup_project_state.sh"
-    if [[ -x "$backup_script" ]]; then
-        nohup "$backup_script" "$project_dir" "$session_id" >/dev/null 2>&1 &
-        disown
-    fi
-
-    # opt-in チェック: .claude/export_session がなければ org エクスポートはスキップ
-    if [[ ! -f "$project_dir/.claude/export_session" ]]; then
-        exit 0
-    fi
-
-    # work-logger からのファイル名指定を確認
-    local work_logger_file="$project_dir/.claude/work-logger_${session_id}.txt"
-    local output_file=""
-
-    if [[ -f "$work_logger_file" ]]; then
-        # work-logger が指定したファイル名を使用
-        output_file=$(cat "$work_logger_file")
-        # 使用後は削除
-        rm -f "$work_logger_file"
-    else
-        local project_name
-        project_name=$(basename "$project_dir")
-
-        local short_id="${session_id:0:8}"
-        local date_str
-        date_str=$(date '+%Y-%m-%d')
-
-        # sessions ディレクトリを確認
-        mkdir -p "$SESSION_LOG_DIR"
-
-        # ファイル名: project_YYYY-MM-DD_shortid.org
-        output_file="$SESSION_LOG_DIR/${project_name}_${date_str}_${short_id}.org"
-    fi
-
-    # 出力先ディレクトリを確認
-    mkdir -p "$(dirname "$output_file")"
-
-    # ccexport を実行（osc-tap ログがあればタイトルも含める）
-    # --titles-dir は exists=True 制約があるため、ディレクトリがあるときのみ付ける
-    # Note: SessionEnd hook はプロセス終了時に即座に kill される既知の問題があるため
+    # Note: SessionEnd hook はプロセス終了時に約2秒で kill される既知の問題がある
     # (https://github.com/anthropics/claude-code/issues/41577)
-    # nohup + disown でプロセスを切り離して実行する
-    local titles_args=()
-    if [[ -d "$HOME/.claude/osc-logs" ]]; then
-        titles_args=(--titles-dir "$HOME/.claude/osc-logs/")
-    fi
-    nohup ccexport export -s "$session_id" -o "$output_file" -f org \
-        "${titles_args[@]}" >/dev/null 2>&1 &
+    # そのためここでは重い処理を一切せず、実処理はワーカーに委譲して即座に終了する。
+    # nohup は SIGHUP しか防げずプロセスグループへのシグナルは波及するため、
+    # setsid で新しいセッション/プロセスグループに逃がす。
+    setsid "$SELF" --worker "$session_id" "${CLAUDE_PROJECT_DIR:-}" \
+        >>"$WORKER_LOG" 2>&1 </dev/null &
     disown
 }
 
@@ -470,6 +657,9 @@ case "${1:-}" in
         ;;
     --prepare)
         do_prepare "${2:-}"
+        ;;
+    --worker)
+        do_worker "${2:-}" "${3:-}"
         ;;
     --help|-h)
         show_help

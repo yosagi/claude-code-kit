@@ -40,8 +40,9 @@ if [[ ! -s "$body_file" ]]; then
 fi
 
 # journal 日付（午前3時までは前日）
+# 10#: date +%H は 0 埋め（08, 09）を返すため 8 進数解釈を防ぐ
 hour=$(date +%H)
-if [[ "$hour" -lt 3 ]]; then
+if (( 10#$hour < 3 )); then
     date_str=$(date -d "yesterday" +%Y-%m-%d)
 else
     date_str=$(date +%Y-%m-%d)

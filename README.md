@@ -37,23 +37,40 @@ registry（`~/Notes/claude-registry/`）はセッション情報・バックア�
 
 ### 1. 初期セットアップ（PCごとに1回）
 
+**初回（clone から）**: キットを任意の場所に clone し、bootstrap.sh を実行します。
+
 ```bash
-# 依存ツール導入 + グローバル設定を一括インストール
-./bootstrap.sh
+git clone https://github.com/yosagi/claude-code-kit.git ~/src/claude-code-kit
+cd ~/src/claude-code-kit
+./bootstrap.sh   # 依存ツール導入 + グローバル設定を一括インストール
 ```
 
 これで以下がインストールされます：
 - 依存ツール（jq, ccexport, osc-tap）
-- Skills（inbox, inbox-send, persona-setup, insight, stocktake, note-logger, global-kb 等）
+- Skills（briefing, inbox, inbox-send, persona-setup, insight, insight-status, stocktake, note-logger, global-kb 等）
 - Hooks（SessionStart: registry 登録、SessionEnd: ログエクスポート・バックアップ・記憶ドラフト処理、UserPromptSubmit: 時報）
 - Status Line（コンテキスト使用率・rate limits 表示）
 - Sandbox 例外設定、許可設定
 - claude-code ラッパー（後述）と起動時コンテキスト組み立てスクリプト
 
-更新時も `bootstrap.sh` を再実行すれば最新化されます（`--force` でツールも再インストール）。
+最後に `update-registry.sh` が実行され、キットの内容が `~/Notes/claude-registry/dist/` に配置されます。ここが以降の自動インストール（auto-install）の配布元になります。
+
+**2台目以降（registry 同期済みPC）**: `~/Notes/claude-registry/` を Syncthing 等で同期していれば clone は不要で、registry 内の bootstrap.sh を実行するだけです。
+
+```bash
+~/Notes/claude-registry/dist/bootstrap.sh
+```
+
 既存の `~/.claude/settings.json` は自動的に `settings.json.bak` にバックアップされます。
 
-複数PCで使う場合は、`~/Notes/claude-registry/` を Syncthing 等でPC間同期した上で、`~/Notes/claude-registry/dist/` に配置すれば、他のPCでは `claude-code` 起動時に自動インストールされます。
+**キットの更新**: clone したディレクトリで pull して `update-registry.sh` を実行します。registry に配置され、他のPCでも次回の `claude-code` 起動時に自動インストールされます（依存ツールも更新したい場合は代わりに `./bootstrap.sh` を再実行）。
+
+```bash
+cd ~/src/claude-code-kit
+git pull && ./update-registry.sh
+```
+
+fork を作って自分向けの修正版を運用する場合も、pull 元が fork になるだけでこの手順のまま成り立ちます。
 
 ### 2. プロジェクトのセットアップ
 
@@ -144,6 +161,36 @@ insight はプロジェクトの棚卸し（TODO/IDEAS の整理提案、実装�
 
 複数PCで registry を同期していれば、全ホストの `kb/` が横断的に読まれ、どのPCで記録した知見も共有されます（同名ファイルは mtime の新しい方を採用）。
 
+## キット外のスキルを配布する（dist-extras）
+
+キットに同梱しない手元のスキルを、キットと同じ経路で全PCに配布できます。キットが知るのは配置の規約だけで、中身には関知しません。
+
+registry に「配布経路」を作り、その下にスキルを置きます。経路は複数持てるので、配布元が増えても同じ規約のまま扱えます。
+
+```
+~/Notes/claude-registry/dist-extras/<経路名>/
+├── skills/<スキル名>/    # スキル本体
+├── deprecated            # 廃止したスキル名（1行1件、# 以降はコメント）
+└── .extras-stamp         # 更新印（update-extras.sh が書く）
+```
+
+配信は発信元のディレクトリを指定して実行します。スキルディレクトリを並べたディレクトリと、任意で `deprecated` ファイルを置いておきます。
+
+```bash
+./update-extras.sh <経路名> <発信元ディレクトリ>
+```
+
+他のPCでは、次回の `claude-code` 起動時に `.extras-stamp` の差分が検出され、自動インストールされます（キット本体の auto-install と同じ仕組みで、判定は経路ごとに独立）。
+
+**スキルを廃止するとき**は、発信元から消すだけでは他のPCに伝わりません。registry はファイル同期で配られるため、「消された」のか「まだ届いていない」のか区別できないからです。`deprecated` にスキル名を書いて配信してください。各PCでスキル本体と、それが登録した sandbox の除外設定がまとめて削除されます。
+
+```
+# deprecated の例
+old-skill    # new-skill に統合 (2026-08-27)
+```
+
+廃止リストは原則として消さずに残します（全PCが処理し終えたかを知る術がないため）。1行のテキストなので蓄積しても問題になりません。
+
 ## 設計方針
 
 ### ワークフローとデータの分離
@@ -209,10 +256,11 @@ dist/
 ├── work_in_progress.md              # [プロジェクト] 進行中の作業状態
 ├── LICENSE
 ├── bootstrap.sh                     # 初期セットアップ（依存ツール + グローバル設定）
+├── update-registry.sh               # キット内容を registry に配置（更新の配布元）
+├── update-extras.sh                 # キット外のスキルを registry に配置（dist-extras）
 ├── setup_global.sh                  # グローバル設定のインストーラ
-├── install-skill.sh                 # スキル個別インストーラ
-├── init-project.sh                  # プロジェクト構造の初期化（べき等）
-└── setup_claude_permissions.sh      # 許可設定の個別追加
+├── install-skill.sh                 # スキル個別インストーラ（--uninstall で削除）
+└── init-project.sh                  # プロジェクト構造の初期化（べき等）
 ```
 
 - **global.claude/**: `~/.claude/` にグローバルインストールされ、全プロジェクトで共有

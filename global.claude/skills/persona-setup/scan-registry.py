@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # 目的: registry の既存 persona_config.md を走査し、分布サマリと頻出クラスタを出力
+#       --projects でプロジェクト-人格対応表を出力（project_title.txt ベース）
 # 関連: persona-setup SKILL.md Step 3a
 # 前提: ~/Notes/claude-registry/<hostname>/<dir-name>/persona_config.md
 
@@ -97,7 +98,76 @@ def parse_file(path: str) -> dict:
     }
 
 
+def print_projects() -> int:
+    """registry 全ホストを走査し、プロジェクト-人格対応表を markdown で出力"""
+    print("# プロジェクト-人格対応表（registry から生成）")
+
+    if not REGISTRY.is_dir():
+        print()
+        print("（registry 未作成。）")
+        return 0
+
+    for host_dir in sorted(REGISTRY.iterdir()):
+        if not host_dir.is_dir() or host_dir.name in ("dist", "drafts"):
+            continue
+
+        rows = []
+        for proj in sorted(host_dir.iterdir()):
+            if not proj.is_dir():
+                continue
+            title_file = proj / "project_title.txt"
+            config_file = proj / "persona_config.md"
+            if not title_file.is_file() and not config_file.is_file():
+                continue
+
+            name = proj.name
+            persona = ""
+            path = ""
+            summary = ""
+
+            if title_file.is_file():
+                # 1行目: "プロジェクト名 / 人格名 : 概要"、2行目: プロジェクトパス
+                try:
+                    lines = title_file.read_text(encoding="utf-8").splitlines()
+                except Exception:
+                    lines = []
+                if lines:
+                    head, _, summary = lines[0].strip().partition(" : ")
+                    pname, _, persona = head.partition(" / ")
+                    if pname.strip():
+                        name = pname.strip()
+                    persona = persona.strip()
+                    summary = summary.strip()
+                if len(lines) > 1:
+                    path = lines[1].strip()
+                elif summary:
+                    # 旧 hook の出力形式対策: title 側の改行欠落で概要とパスが連結されたケース
+                    m = re.search(r"(/(?:home|Users|root)/\S+)$", summary)
+                    if m:
+                        path = m.group(1)
+                        summary = summary[: m.start()].strip()
+
+            if not persona and config_file.is_file():
+                persona = "、".join(parse_file(str(config_file))["names"])
+
+            rows.append((name, persona or "（未設定）", path, summary))
+
+        if rows:
+            print()
+            print(f"## {host_dir.name}")
+            print()
+            print("| プロジェクト | 人格 | パス | 概要 |")
+            print("|---|---|---|---|")
+            for name, persona, path, summary in rows:
+                print(f"| {name} | {persona} | {path} | {summary} |")
+
+    return 0
+
+
 def main() -> int:
+    if "--projects" in sys.argv[1:]:
+        return print_projects()
+
     print("# 既存人格分布")
     print()
 

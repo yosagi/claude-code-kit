@@ -15,6 +15,8 @@ SESSION_LOG_DIR="$HOME/Notes/journals/claude_sessions"
 REGISTRY_DIR="$HOME/Notes/claude-registry"
 GLOBAL_RULES_FILE="$REGISTRY_DIR/global_rules.md"
 GLOBAL_CLAUDE_MD="$CLAUDE_DIR/CLAUDE.md"
+EXTRAS_DIR="$REGISTRY_DIR/dist-extras"
+EXTRAS_STAMP_DIR="$CLAUDE_DIR/extras-stamps"
 
 # 色付き出力
 GREEN='\033[0;32m'
@@ -95,6 +97,101 @@ check_deprecated_skills() {
     fi
 }
 
+## dist-extras（キット外の配布経路）
+# ~/Notes/claude-registry/dist-extras/<route>/ を規約に従って処理する。
+#   skills/<name>/   スキル本体
+#   deprecated       廃止スキル名を1行1件（`# 以降`はコメント）
+#   .extras-stamp    経路ごとの更新印
+# キットは規約だけを知り、中身には関知しない。
+
+# deprecated ファイルからスキル名を読み出す（コメント・空行を除去）
+read_deprecated_names() {
+    local file="$1"
+    [[ -f "$file" ]] || return 0
+    sed -e 's/#.*//' -e 's/[[:space:]]//g' "$file" | grep -v '^$' || true
+}
+
+install_extras() {
+    [[ -d "$EXTRAS_DIR" ]] || return 0
+
+    local route_dir route name skill_dir found=0
+    for route_dir in "$EXTRAS_DIR"/*/; do
+        [[ -d "$route_dir" ]] || continue
+        route=$(basename "$route_dir")
+
+        if [[ $found -eq 0 ]]; then
+            echo ""
+            info "extras をインストール中..."
+            found=1
+        fi
+        info "  経路: $route"
+
+        # 墓標の処理はインストールより先に行う
+        # （同名スキルが復活した場合にインストール側が勝つようにするため）
+        while read -r name; do
+            "$SCRIPT_DIR/install-skill.sh" --uninstall "$name"
+        done < <(read_deprecated_names "$route_dir/deprecated")
+
+        for skill_dir in "$route_dir"skills/*/; do
+            if [[ -d "$skill_dir" ]]; then
+                "$SCRIPT_DIR/install-skill.sh" "$skill_dir"
+            fi
+        done
+
+        # ローカル stamp を更新（wrapper の auto-install 判定に使う）
+        if [[ -f "$route_dir/.extras-stamp" ]]; then
+            mkdir -p "$EXTRAS_STAMP_DIR"
+            cp "$route_dir/.extras-stamp" "$EXTRAS_STAMP_DIR/$route"
+        fi
+    done
+}
+
+uninstall_extras() {
+    [[ -d "$EXTRAS_DIR" ]] || return 0
+
+    local route_dir skill_dir name
+    for route_dir in "$EXTRAS_DIR"/*/; do
+        [[ -d "$route_dir" ]] || continue
+        for skill_dir in "$route_dir"skills/*/; do
+            if [[ -d "$skill_dir" ]]; then
+                name=$(basename "$skill_dir")
+                if [[ -d "$SKILLS_DIR/$name" ]]; then
+                    "$SCRIPT_DIR/install-skill.sh" --uninstall "$name"
+                fi
+            fi
+        done
+    done
+    rm -rf "$EXTRAS_STAMP_DIR"
+}
+
+status_extras() {
+    [[ -d "$EXTRAS_DIR" ]] || return 0
+
+    local route_dir route skill_dir name found=0
+    for route_dir in "$EXTRAS_DIR"/*/; do
+        [[ -d "$route_dir" ]] || continue
+        route=$(basename "$route_dir")
+
+        if [[ $found -eq 0 ]]; then
+            echo ""
+            echo "Extras:"
+            found=1
+        fi
+        echo "  [$route]"
+
+        for skill_dir in "$route_dir"skills/*/; do
+            if [[ -d "$skill_dir" ]]; then
+                name=$(basename "$skill_dir")
+                if [[ -d "$SKILLS_DIR/$name" ]]; then
+                    echo "    ✓ $name"
+                else
+                    echo "    ✗ $name (未インストール)"
+                fi
+            fi
+        done
+    done
+}
+
 do_install() {
     echo "Claude Code グローバル設定をインストールします..."
     echo ""
@@ -126,6 +223,9 @@ do_install() {
     # 廃止スキルのチェック
     check_deprecated_skills
 
+    # 1b. extras（キット外の配布経路）をインストール
+    install_extras
+
     # 2. hooks をコピー
     info "SessionEnd hook をインストール中..."
     cp "$SCRIPT_DIR/global.claude/hooks/session_end.sh" "$HOOKS_DIR/"
@@ -156,8 +256,13 @@ do_install() {
     if command -v osc-tap >/dev/null 2>&1; then
         info "claude-code ラッパーをインストール中..."
         mkdir -p "$BIN_DIR"
-        cp "$SCRIPT_DIR/scripts/claude-code" "$BIN_DIR/"
-        chmod +x "$BIN_DIR/claude-code"
+        # 実行中の wrapper 自身（auto-install 経由）を上書きする可能性があるため
+        # atomic に置き換える。cp は同一 inode を truncate するので実行中の bash が
+        # 壊れるが、mv (rename) なら旧 inode が残り実行中プロセスは影響を受けない。
+        local tmp_wrapper="$BIN_DIR/.claude-code.tmp.$$"
+        cp "$SCRIPT_DIR/scripts/claude-code" "$tmp_wrapper"
+        chmod +x "$tmp_wrapper"
+        mv -f "$tmp_wrapper" "$BIN_DIR/claude-code"
     else
         warn "osc-tap 未インストールのため claude-code ラッパーはスキップしました"
     fi
@@ -203,15 +308,20 @@ do_install() {
         "Edit(/reports/ideas/**)",
         "Edit(/reports/todos/**)",
         "Edit(/reports/insight/**)",
-        "Edit(/reports/jobs/**)",
-        "Write(/reports/memory/**)",
-        "Write(/reports/personas/**)",
-        "Write(/work_in_progress.md)",
-        "Write(/reports/ideas/**)",
-        "Write(/reports/todos/**)",
-        "Write(/reports/insight/**)",
-        "Write(/reports/jobs/**)"
+        "Edit(/reports/jobs/**)"
     ]'
+
+    # 無効な Write(path) ルールの掃除
+    # 2026-07-15 に dist から Write(path) 7行を削除したが、下のマージは追加のみで
+    # 削除が伝播しないため、ここで明示的に除去する。パスパターン付き Write(...) は
+    # ファイル権限チェックに一切マッチしない（実測済み、起動時警告の原因になるだけ）ので
+    # 除去しても挙動は変わらない。bare "Write"（パスなし）は有効なルールなので残す
+    local stale_write_rules
+    stale_write_rules=$(jq -r '[.permissions.allow // [] | .[] | select(type == "string" and startswith("Write("))] | .[]' "$SETTINGS_FILE")
+    if [[ -n "$stale_write_rules" ]]; then
+        info "無効な Write(path) ルールを除去します（起動時警告の原因）:"
+        echo "$stale_write_rules" | sed 's/^/    - /'
+    fi
 
     # settings.json を更新
     local tmp=$(mktemp)
@@ -221,8 +331,11 @@ do_install() {
        --arg hook_start_cmd "$HOOKS_DIR/session_start.sh" \
        --arg hook_time_cmd "$HOOKS_DIR/time_awareness.sh" \
        --arg statusline_cmd "$CLAUDE_DIR/statusline.sh" '
-        # 許可設定をマージ
-        .permissions.allow = ((.permissions.allow // []) + $perms | unique) |
+        # 許可設定をマージ（無効な Write(path) ルールは除去）
+        .permissions.allow = (
+            ((.permissions.allow // []) | map(select((type == "string" and startswith("Write(")) | not)))
+            + $perms | unique
+        ) |
         # SessionEnd hook をマージ（既存エントリを保持、自分の hook は追加/更新）
         .hooks.SessionEnd = (
             [.hooks.SessionEnd // [] | .[] | select(
@@ -270,6 +383,9 @@ do_uninstall() {
             info "  - $skill"
         fi
     done
+
+    # extras のスキルを削除
+    uninstall_extras
 
     # hooks を削除
     if [[ -f "$HOOKS_DIR/session_end.sh" ]]; then
@@ -328,6 +444,9 @@ do_status() {
             echo "  ✗ $skill (未インストール)"
         fi
     done
+
+    # extras
+    status_extras
 
     # hooks
     echo ""

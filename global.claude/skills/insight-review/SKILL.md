@@ -44,6 +44,7 @@ insight レポート（YYYY-MM-DD）の提案:
 **実行しうるアクション例**:
 
 - **done/ 移動**: TODO/IDEAS ファイルを done/ に移動し、INDEX.md を更新
+- **wip整理**: work_in_progress.md の項目を削除、または概要 + 参照パスだけの縮約形に書き換え（直接 Edit。中断作業の削除時は TODO 化してから消す）
 - **rejected/ 移動**: TODO/IDEAS ファイルを rejected/ に移動し、INDEX.md を更新
 - **KB 記録**: `reports/kb/` に新規ファイルを作成し、INDEX.md に追加
 - **新規 TODO/IDEAS**: ファイル作成 + INDEX.md 追加
