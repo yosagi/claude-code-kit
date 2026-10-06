@@ -16,15 +16,13 @@ allowed-tools: Bash(~/.claude/skills/inbox/inbox-read.sh:*)
 /inbox done [ファイル名]
 ```
 
-## 共通の最初の手順
+## スクリプトの呼び出し方
 
-**すべてのコマンドで、最初にプロジェクトルートに移動すること。**
+`inbox-read.sh` には **`-C` でプロジェクトルートを渡す**（システムプロンプトの「Primary working directory」の値）。
+スクリプトが自分でそのディレクトリへ移動するので、`cd` は不要。
 
-```bash
-cd /path/to/project/root
-```
-
-サブディレクトリにいると INDEX.md の相対パスが狂う。
+`inbox-read.sh` は単独の Bash 呼び出しで実行する。`cd`・パイプ・リダイレクト・`;`・`&&` と連結すると
+コマンド全体が excludedCommands に合致せず sandbox 内で走り、`reports/inbox/` の書き込みで失敗する。
 
 ## コマンド
 
@@ -33,7 +31,7 @@ cd /path/to/project/root
 INDEX.md の [NEW] マーカーを削除し、内容を表示する。
 
 ```bash
-~/.claude/skills/inbox/inbox-read.sh read [ファイル名]
+~/.claude/skills/inbox/inbox-read.sh -C [プロジェクトルート] read [ファイル名]
 ```
 
 ### done - 依頼を完了
@@ -41,7 +39,7 @@ INDEX.md の [NEW] マーカーを削除し、内容を表示する。
 処理済みの依頼を done/ に移動し、INDEX.md から削除する。
 
 ```bash
-~/.claude/skills/inbox/inbox-read.sh done [ファイル名]
+~/.claude/skills/inbox/inbox-read.sh -C [プロジェクトルート] done [ファイル名]
 ```
 
 ## INDEX.md の形式

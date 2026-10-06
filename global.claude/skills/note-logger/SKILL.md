@@ -66,6 +66,9 @@ Write ツールで本文ドラフトを作成する。**見出し行 `** ...` �
 ~/.claude/skills/note-logger/submit_draft.sh <project> <title> <Step 2 で Write に渡した絶対パス>
 ```
 
+このコマンドは単独の Bash 呼び出しで実行する。`cd`・パイプ・リダイレクト・`;`・`&&` と連結しない。
+連結するとコマンド全体が excludedCommands に合致せず sandbox 内で走り、drafts ディレクトリへの書き込みで失敗する。
+
 submit_draft.sh が `** HH:MM [project@host] title` の見出しを本文に付与し、drafts ディレクトリに完成形を配置する。本文ファイルは削除される。journals への追記は後続の dispatcher（process_journal_drafts.sh）が自動で行う。
 
 ## 同一セッションでの複数トピック

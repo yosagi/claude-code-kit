@@ -18,6 +18,9 @@ allowed-tools: Bash(~/.claude/skills/insight-status/insight-status.sh:*)
    ~/.claude/skills/insight-status/insight-status.sh /path/to/project
    ```
 
+   単独の Bash 呼び出しで実行する。パイプ・リダイレクト・`;`・`&&` と連結しない
+   （連結すると excludedCommands に合致せず sandbox 内で走り、systemd / journalctl の参照に失敗する）
+
 2. 出力（markdown 数行）をそのまま提示する。要約や言い換えはしない
 
 3. 出力に応じて次の一手を一言添える

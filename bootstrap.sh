@@ -138,6 +138,17 @@ echo ""
 # uv tool でインストールしたものが PATH に通っていない場合があるので再確認
 export PATH="$HOME/.local/bin:$PATH"
 
+# Step 1b: sandbox の前提（Ubuntu 26.04 以降の AppArmor）
+# bwrap-userns-restrict プロファイルが有効な環境では Claude Code の sandbox が起動しない。
+# 非該当環境（24.04 以前・他ディストロ・macOS）ではスクリプト側でスキップされる
+echo "--- Step 1b: sandbox の前提確認（AppArmor） ---"
+echo ""
+
+"$SCRIPT_DIR/scripts/setup_bwrap_apparmor.sh" \
+    || warn "AppArmor の手当てに失敗しました。後で ~/.claude/scripts/setup_bwrap_apparmor.sh を実行してください"
+
+echo ""
+
 # Step 2: グローバル設定
 echo "--- Step 2: グローバル設定のインストール ---"
 echo ""

@@ -19,16 +19,40 @@ inbox の本文は読まない（読むと既読化の整合が崩れる。INDEX
 セッション開始時に自動読み込みされたもの（work_in_progress.md、work_history.md、各 INDEX.md）が
 コンテキストに既にあるなら再読しない。
 
+まず `reports/status/current.md`（前回のセッション終了時に `/project-status` が作った
+内部状態のスナップショット）を読む。**これが分類の土台**になる。
+
+| 情報源 | 読む範囲 | 目的 |
+|--------|----------|------|
+| `reports/status/current.md` | 全文 | 進行中・外部待ち・控えの分類済みの要約。末尾に insight の現況追記があれば、その確認日も見る |
+| `reports/inbox/INDEX.md` | 全文 | `[NEW]` の件数と、ファイル名（`YYYY-MM-DD_from_<送り元>_<件名>.md`）から送り元・件名を推定 |
+| `git status --short` | 出力全体 | 未コミットの差分（コミットはユーザーが手動で行う運用のため、忘れ物になりやすい）。sandbox 内実行時にプロジェクトルートへ生える dotfile 群（`.bashrc` `.profile` `.gitconfig` 等）は sandbox 由来の一時物なので無視する |
+| `reports/briefing/*.md` | 全文 | プロジェクト固有の確認観点（下記 1b） |
+
+#### 1a. スナップショットの鮮度を確かめる
+
+スナップショットは前回のセッション終了時点のもので、それ以降の変更は映っていない。
+先頭の生成時刻と、`work_in_progress.md` および `reports/` 配下の最新更新時刻を比べる。
+
+```bash
+stat -c '%y %n' reports/status/current.md work_in_progress.md
+find reports -newer reports/status/current.md -type f -not -path 'reports/status/*' | head
+```
+
+- **スナップショットが最新**: そのまま土台に使う。個別ファイルは読まない
+- **新しい変更がある**: 変わったファイルだけ読み直して差分を重ねる（全部は読まない）
+- **スナップショットが無い / 明らかに古い**（前回のセッションが異常終了した、日付が数週間前で
+  work_history に新しいエントリがある等）: 下の全読みにフォールバックする
+
+#### 1a'. フォールバック（スナップショットが使えないとき）
+
 | 情報源 | 読む範囲 | 目的 |
 |--------|----------|------|
 | `work_in_progress.md` | 全文 | 進行中の作業、中断理由、再開時の残タスク、外部待ち |
-| `reports/inbox/INDEX.md` | 全文 | `[NEW]` の件数と、ファイル名（`YYYY-MM-DD_from_<送り元>_<件名>.md`）から送り元・件名を推定 |
 | `reports/todos/INDEX.md` と各ファイル | 全文 | 優先度（ファイル名の high/mid/low）、内容、実装ログ参照の有無 |
 | `reports/ideas/INDEX.md` と各ファイル | 概要セクションまで | 温めているもの。優先度判定の下位候補 |
 | `reports/memory/work_history.md` | 直近3エントリ | 前回何をして、どこで終わったか |
 | wip が参照する実装ログ（`reports/tasks/...`） | 末尾30行程度 | 最新の進捗と完了報告の有無 |
-| `git status --short` | 出力全体 | 未コミットの差分（コミットはユーザーが手動で行う運用のため、忘れ物になりやすい）。sandbox 内実行時にプロジェクトルートへ生える dotfile 群（`.bashrc` `.profile` `.gitconfig` 等）は sandbox 由来の一時物なので無視する |
-| `reports/briefing/*.md` | 全文 | プロジェクト固有の確認観点（下記 1b） |
 
 ### 1b. プロジェクト固有の観点を評価する
 
@@ -60,6 +84,9 @@ inbox の本文は読まない（読むと既読化の整合が崩れる。INDEX
 ```bash
 ~/.claude/skills/insight-status/insight-status.sh <プロジェクトルート>
 ```
+
+単独の Bash 呼び出しで実行する。パイプ・リダイレクト・`;`・`&&`・他のコマンドと連結しない
+（連結すると excludedCommands に合致せず sandbox 内で走る）。
 
 出力の読み方と手順4への反映:
 

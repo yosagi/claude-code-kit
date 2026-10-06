@@ -14,10 +14,15 @@ allowed-tools: Bash(~/.claude/skills/inbox/inbox-read.sh:*), Bash(~/.claude/skil
 
 ## 処理手順
 
+**スクリプトの呼び出し方**: `inbox-read.sh` と `inbox-send.sh` には `-C` でプロジェクトルート
+（システムプロンプトの「Primary working directory」）を渡し、それぞれ単独の Bash 呼び出しで実行する。
+`cd`・パイプ・リダイレクト・`;`・`&&` と連結しない。連結するとコマンド全体が excludedCommands に合致せず
+sandbox 内で走り、inbox の書き込みで失敗する。headless では sandbox 外での再実行の承認も得られない。
+
 ### 1. 依頼を読む
 
 ```bash
-~/.claude/skills/inbox/inbox-read.sh read [指定されたファイル名]
+~/.claude/skills/inbox/inbox-read.sh -C [プロジェクトルート] read [指定されたファイル名]
 ```
 
 これにより依頼内容が表示され、INDEX.md の `[NEW]` マーカーが削除されます。
@@ -36,7 +41,7 @@ allowed-tools: Bash(~/.claude/skills/inbox/inbox-read.sh:*), Bash(~/.claude/skil
 作業が終わったら（成功・失敗に関わらず）：
 
 ```bash
-~/.claude/skills/inbox/inbox-read.sh done [ファイル名]
+~/.claude/skills/inbox/inbox-read.sh -C [プロジェクトルート] done [ファイル名]
 ```
 
 これにより依頼ファイルが `done/` に移動し、INDEX.md から削除されます。
@@ -51,7 +56,7 @@ allowed-tools: Bash(~/.claude/skills/inbox/inbox-read.sh:*), Bash(~/.claude/skil
 依頼に「報告先」が記載されている場合、**成功・失敗に関わらず**結果を送信元に返します。
 
 ```bash
-~/.claude/skills/inbox-send/inbox-send.sh [報告先プロジェクトルート] [draft ファイル] [送信元名] [日付]
+~/.claude/skills/inbox-send/inbox-send.sh -C [プロジェクトルート] [報告先プロジェクトルート] [draft ファイル] [送信元名] [日付]
 ```
 
 **注意**: 報告先はプロジェクトルート（例: `~/work/myproject`）を指定する。

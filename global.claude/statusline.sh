@@ -1,26 +1,44 @@
 #!/bin/bash
-# Claude Code Status Line
-# コンテキスト使用率、rate limits、プロジェクト名、cwd、モデルを表示
+# Claude Code Status Line（枠組み）
+#
+# 表示の中身は部品が作り、この枠組みは入力 JSON を配って断片をつなぐだけ。
+#
+#   ~/.claude/statusline.d/
+#   ├── kit/        キット同梱の部品。NN-name.sh を source して seg_<name> を呼ぶ（setup_global.sh が管理）
+#   ├── segments/   外部の表示部品。実行ファイル。同期実行、stdin に JSON、stdout の 1 行目が断片
+#   └── sinks/      外部の吸い出し部品。実行ファイル。切り離して実行、stdin に JSON、出力は捨てる
+#
+# kit/ と segments/ はファイル名でまとめて並べる（NN 接頭辞で順序が決まる）。断片は " | " でつなぐ。
+# segments/ は SEGMENT_TIMEOUT で打ち切り、非 0 終了か出力が空ならその断片を落とす。
+# sinks/ は setsid で切り離すので、親プロセスをたどる処理（端末の特定など）は動かない。端末を触るものは segments/ に置く。
 
 input=$(cat)
 
-# 基本情報を取得
-MODEL=$(echo "$input" | jq -r '.model.display_name // "?"')
-PROJECT_DIR=$(echo "$input" | jq -r '.workspace.project_dir // "?"')
-CURRENT_DIR=$(echo "$input" | jq -r '.workspace.current_dir // .cwd // "?"')
-PROJECT_NAME=$(basename "$PROJECT_DIR")
+STATUSLINE_D="${CLAUDE_STATUSLINE_D:-$HOME/.claude/statusline.d}"
+SEGMENT_TIMEOUT="${CLAUDE_STATUSLINE_SEGMENT_TIMEOUT:-0.3}"
 
-# プロジェクトルート相対の cwd を計算
-if [ "$CURRENT_DIR" = "$PROJECT_DIR" ]; then
-    REL_CWD=""
-else
-    # project_dir を prefix として削除
-    REL_CWD="${CURRENT_DIR#$PROJECT_DIR/}"
-    if [ "$REL_CWD" = "$CURRENT_DIR" ]; then
-        # project_dir 外にいる場合はフルパス表示
-        REL_CWD="$CURRENT_DIR"
-    fi
+# sinks は最初に放つ（本体の描画を待たせない）
+if [ -d "$STATUSLINE_D/sinks" ]; then
+    for f in "$STATUSLINE_D/sinks"/*; do
+        [ -f "$f" ] && [ -x "$f" ] || continue
+        printf '%s' "$input" | setsid -f "$f" >/dev/null 2>&1
+    done
 fi
+
+# 入力 JSON の解析は一回だけ。キット部品はこの SL_* 変数を読む
+eval "$(printf '%s' "$input" | jq -r '
+    def num: if . == null then "" else (. | floor | tostring) end;
+    @sh "SL_MODEL=\(.model.display_name // "?")",
+    @sh "SL_PROJECT_DIR=\(.workspace.project_dir // "?")",
+    @sh "SL_CURRENT_DIR=\(.workspace.current_dir // .cwd // "?")",
+    @sh "SL_CTX_REMAINING=\(.context_window.remaining_percentage // 0 | num)",
+    @sh "SL_CTX_WINDOW=\(.context_window.context_window_size // 200000 | num)",
+    @sh "SL_HAS_RATE=\(if .rate_limits then "1" else "0" end)",
+    @sh "SL_FIVE_USED=\(.rate_limits.five_hour.used_percentage | num)",
+    @sh "SL_FIVE_RESET=\(.rate_limits.five_hour.resets_at // "")",
+    @sh "SL_SEVEN_USED=\(.rate_limits.seven_day.used_percentage | num)",
+    @sh "SL_SEVEN_RESET=\(.rate_limits.seven_day.resets_at // "")"
+' 2>/dev/null)"
 
 # 色付けヘルパー: colorize <value> （>80: 赤太字, >50: 黄, それ以外: 通常）
 colorize() {
@@ -34,118 +52,47 @@ colorize() {
     fi
 }
 
-# コンテキスト使用率（autocompact buffer 分を加算した実質使用率）
-REMAINING=$(echo "$input" | jq -r '.context_window.remaining_percentage // 0' | cut -d. -f1)
-WINDOW_SIZE=$(echo "$input" | jq -r '.context_window.context_window_size // 200000')
-AUTOCOMPACT_BUFFER=$(( (33000 * 100 + WINDOW_SIZE - 1) / WINDOW_SIZE ))
-CTX_USED=$((100 - REMAINING + AUTOCOMPACT_BUFFER))
-[ $CTX_USED -gt 100 ] && CTX_USED=100
-CTX_FMT="💬 $(colorize "$CTX_USED")"
-
-# rate limits（Pro/Max のみ、フィールドがなければ非表示）
-RATE_FMT=""
-HAS_RATE=$(echo "$input" | jq -e '.rate_limits' >/dev/null 2>&1 && echo 1 || echo 0)
-if [ "$HAS_RATE" = "1" ]; then
-    # 5h
-    FIVE_USED=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty' | cut -d. -f1)
-    FIVE_RESET=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
-    if [ -n "$FIVE_USED" ]; then
-        FIVE_FMT=$(colorize "$FIVE_USED")
-        if [ -n "$FIVE_RESET" ]; then
-            FIVE_TIME=$(date -d "@$FIVE_RESET" '+%-Hh' 2>/dev/null || date -r "$FIVE_RESET" '+%-Hh' 2>/dev/null)
-            FIVE_FMT="${FIVE_FMT}@${FIVE_TIME}"
-        fi
-        RATE_FMT=" 🕐 ${FIVE_FMT}"
-    fi
-    # 7d
-    SEVEN_USED=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty' | cut -d. -f1)
-    SEVEN_RESET=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // empty')
-    if [ -n "$SEVEN_USED" ]; then
-        SEVEN_FMT=$(colorize "$SEVEN_USED")
-        if [ -n "$SEVEN_RESET" ]; then
-            SEVEN_DATE=$(date -d "@$SEVEN_RESET" '+%-m/%-d' 2>/dev/null || date -r "$SEVEN_RESET" '+%-m/%-d' 2>/dev/null)
-            SEVEN_FMT="${SEVEN_FMT}@${SEVEN_DATE}"
-        fi
-        RATE_FMT="${RATE_FMT} ${SEVEN_FMT}"
-    fi
-fi
-
-# inbox 件数（NEW + 既読）
-INBOX_INDEX="$PROJECT_DIR/reports/inbox/INDEX.md"
-INBOX_NEW=0
-INBOX_READ=0
-if [ -f "$INBOX_INDEX" ]; then
-    INBOX_NEW=$(grep -c '\[NEW\]' "$INBOX_INDEX" 2>/dev/null)
-    INBOX_NEW=${INBOX_NEW:-0}
-    INBOX_TOTAL=$(grep -c '^- ' "$INBOX_INDEX" 2>/dev/null)
-    INBOX_TOTAL=${INBOX_TOTAL:-0}
-    INBOX_READ=$((INBOX_TOTAL - INBOX_NEW))
-fi
-INBOX_FMT=""
-if [ "$INBOX_TOTAL" -gt 0 ] 2>/dev/null; then
-    if [ "$INBOX_NEW" -gt 0 ] 2>/dev/null; then
-        INBOX_FMT=" | \033[33m📬 ${INBOX_NEW}/${INBOX_TOTAL}\033[0m"
-    else
-        INBOX_FMT=" | 📬 0/${INBOX_TOTAL}"
-    fi
-fi
-
-# IDEAS / TODO 件数
-IDEAS_INDEX="$PROJECT_DIR/reports/ideas/INDEX.md"
-TODOS_INDEX="$PROJECT_DIR/reports/todos/INDEX.md"
-IDEAS_COUNT=0
-TODOS_COUNT=0
-if [ -f "$IDEAS_INDEX" ]; then
-    IDEAS_COUNT=$(grep -c '^- [0-9]\{4\}-' "$IDEAS_INDEX" 2>/dev/null)
-    IDEAS_COUNT=${IDEAS_COUNT:-0}
-fi
-if [ -f "$TODOS_INDEX" ]; then
-    TODOS_COUNT=$(grep -c '^- [0-9]\{4\}-' "$TODOS_INDEX" 2>/dev/null)
-    TODOS_COUNT=${TODOS_COUNT:-0}
-fi
-ITEMS_FMT=""
-if [ "$IDEAS_COUNT" -gt 0 ] 2>/dev/null || [ "$TODOS_COUNT" -gt 0 ] 2>/dev/null; then
-    ITEMS_FMT=" | 💡${IDEAS_COUNT} 📋${TODOS_COUNT}"
-fi
-
-# 出力（cwd があれば表示）
-if [ -n "$REL_CWD" ]; then
-    echo -e "[$MODEL] $PROJECT_NAME/$REL_CWD | $CTX_FMT${RATE_FMT}${INBOX_FMT}${ITEMS_FMT}"
-else
-    echo -e "[$MODEL] $PROJECT_NAME | $CTX_FMT${RATE_FMT}${INBOX_FMT}${ITEMS_FMT}"
-fi
-
-# wezterm User Variable を設定（キーマップ制御用）
-# /dev/tty 経由で端末にエスケープシーケンスを送る。
-# Claude Code 2.1.139+ では statusLine command が制御端末なし (tty_nr=0) で
-# 起動されるため /dev/tty が実際の端末に繋がらない。
-# フォールバックとして親プロセスチェーンから実際の pty デバイスを探す。
-find_tty_device() {
-    # /dev/tty が使えるか確認（制御端末がある場合）
-    local tty_nr
-    tty_nr=$(awk '{print $7}' /proc/self/stat 2>/dev/null)
-    if [ "${tty_nr:-0}" -ne 0 ] 2>/dev/null; then
-        echo "/dev/tty"
-        return 0
-    fi
-    # 制御端末がない場合、親プロセスチェーンから pty を探す
-    local pid=$$
-    while [ "$pid" -gt 1 ]; do
-        pid=$(awk '{print $4}' /proc/$pid/stat 2>/dev/null) || break
-        local fd
-        for fd in /proc/$pid/fd/0 /proc/$pid/fd/1 /proc/$pid/fd/2; do
-            local target
-            target=$(readlink "$fd" 2>/dev/null) || continue
-            if [[ "$target" == /dev/pts/* ]]; then
-                echo "$target"
-                return 0
-            fi
-        done
+# 部品の一覧（"basename<TAB>種別<TAB>パス"）をファイル名順に並べる
+list_parts() {
+    local f
+    for f in "$STATUSLINE_D/kit"/*.sh; do
+        [ -f "$f" ] && printf '%s\tkit\t%s\n' "$(basename "$f")" "$f"
     done
-    return 1
+    for f in "$STATUSLINE_D/segments"/*; do
+        [ -f "$f" ] && [ -x "$f" ] && printf '%s\tseg\t%s\n' "$(basename "$f")" "$f"
+    done
 }
 
-TTY_DEV=$(find_tty_device)
-if [ -n "$TTY_DEV" ] && [ -c "$TTY_DEV" ]; then
-    printf '\033]1337;SetUserVar=%s=%s\007' 'WEZTERM_AI_HELPER' "$(printf '%s' 'claude-code' | base64)" > "$TTY_DEV"
-fi
+run_segment() {
+    local f=$1 out
+    if command -v timeout >/dev/null 2>&1; then
+        out=$(printf '%s' "$input" | timeout "$SEGMENT_TIMEOUT" "$f" 2>/dev/null) || return 0
+    else
+        out=$(printf '%s' "$input" | "$f" 2>/dev/null) || return 0
+    fi
+    printf '%s' "${out%%$'\n'*}"
+}
+
+LINE=""
+while IFS=$'\t' read -r name kind path; do
+    frag=""
+    if [ "$kind" = kit ]; then
+        # NN-name.sh → seg_name（ハイフンはアンダースコアに）
+        fn="${name#[0-9][0-9]-}"
+        fn="seg_${fn%.sh}"
+        fn="${fn//-/_}"
+        # shellcheck source=/dev/null
+        source "$path" 2>/dev/null
+        declare -F "$fn" >/dev/null && frag=$("$fn")
+    else
+        frag=$(run_segment "$path")
+    fi
+    [ -n "$frag" ] || continue
+    if [ -z "$LINE" ]; then
+        LINE="$frag"
+    else
+        LINE="$LINE | $frag"
+    fi
+done < <(list_parts | sort -t$'\t' -k1,1)
+
+printf '%s\n' "$LINE"

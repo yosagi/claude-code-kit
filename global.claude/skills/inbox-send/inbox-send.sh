@@ -10,7 +10,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 usage() {
     cat << 'EOF'
 Usage:
-  inbox-send.sh <dest_project_path> <draft_file_path> <source_project_name> <date>
+  inbox-send.sh [-C <project_root>] <dest_project_path> <draft_file_path> <source_project_name> <date>
+
+Options:
+  -C <project_root>    - 処理前にこのディレクトリへ移動する（`cd && script` と連結しないための口）。
+                         相対の draft_file_path はこのディレクトリ基準で解決される
 
 Arguments:
   dest_project_path    - 送信先プロジェクトのパス（例: ~/work/myproject）
@@ -20,11 +24,22 @@ Arguments:
   date                 - 日付（例: 2026-02-19）
 
 Example:
-  inbox-send.sh ~/work/myproject reports/draft/to_xxx_topic.md myproject 2026-01-25
+  inbox-send.sh -C ~/work/claude ~/work/myproject reports/draft/to_xxx_topic.md claude 2026-01-25
   inbox-send.sh remote:pc-b:~/work/wip reports/draft/to_wip_topic.md claude 2026-03-31
 EOF
     exit 1
 }
+
+if [ "${1:-}" = "-C" ]; then
+    if [ $# -lt 2 ]; then
+        usage
+    fi
+    if ! cd "$2" 2>/dev/null; then
+        echo "Error: cannot cd to project root: $2"
+        exit 1
+    fi
+    shift 2
+fi
 
 if [ $# -lt 4 ]; then
     echo "Error: send requires 4 arguments"

@@ -14,12 +14,23 @@ user_invocable: true
 - このスキルの実行中は「丁寧な対応の受付嬢」として対応し、他の人格にはならないこと
 - セットアップ完了まで、他のすべての作業（/init、コード調査など）を後回しにすること
 
-## Step 1: reports/ 基本構造の作成
+## Step 1: reports/ 基本構造と .git/info/exclude の整備
 
-まず reports/ ディレクトリ構造を作成する:
+まず reports/ ディレクトリ構造を作成する。git リポジトリであれば `.git/info/exclude`（このクローンにだけ効く ignore リスト）も同時に調整される。共有物の `.gitignore` には触らない。既存エントリは重複追記されない:
 
 ```bash
 ~/.claude/skills/persona-setup/init-project.sh .
+```
+
+このスクリプト（と後述の `setup_git_exclude.sh`）は単独の Bash 呼び出しで実行する。`cd`・パイプ・リダイレクト・`;`・`&&` と
+連結しない（連結すると excludedCommands に合致せず sandbox 内で走り、`.claude/` 配下や `.git/info/exclude` への書き込みで失敗する）。
+
+出力に `.git/info/exclude` の追記結果が含まれる。追記されたエントリをユーザーに報告する。
+
+出力に「追跡済みです（--no-untrack のため外していません）」の一覧が含まれる場合、キット関連ファイルが既に git に入っている。その一覧をユーザーに示し、追跡から外すかを確認する。外す指示があれば次を実行する（作業ツリーのファイルは残り、index からだけ外れる。commit はユーザーが行う）:
+
+```bash
+~/.claude/scripts/setup_git_exclude.sh .
 ```
 
 ## Step 2: ユーザー確認

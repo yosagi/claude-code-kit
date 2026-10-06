@@ -17,6 +17,7 @@ GLOBAL_RULES_FILE="$REGISTRY_DIR/global_rules.md"
 GLOBAL_CLAUDE_MD="$CLAUDE_DIR/CLAUDE.md"
 EXTRAS_DIR="$REGISTRY_DIR/dist-extras"
 EXTRAS_STAMP_DIR="$CLAUDE_DIR/extras-stamps"
+EXTRAS_INSTALLERS_DIR="$CLAUDE_DIR/extras-installers"
 
 # 色付き出力
 GREEN='\033[0;32m'
@@ -48,6 +49,7 @@ Options:
   - 許可設定 (記憶ファイルへのアクセス許可)
   - claude-code ラッパー (osc-tap 経由の起動スクリプト、osc-tap 必須)
   - グローバル KB コンテキスト組み立てスクリプト (build_startup_context.py)
+  - 保守用ツール (check_registry_health.py, check_journal_links.sh, setup_git_exclude.sh, setup_bwrap_apparmor.sh)
 
 EOF
 }
@@ -100,21 +102,67 @@ check_deprecated_skills() {
 ## dist-extras（キット外の配布経路）
 # ~/Notes/claude-registry/dist-extras/<route>/ を規約に従って処理する。
 #   skills/<name>/   スキル本体
-#   deprecated       廃止スキル名を1行1件（`# 以降`はコメント）
+#   installers/<f>   自分をインストールする実行ファイル（--install / --uninstall を受ける）
+#   deprecated       廃止したスキル名・インストーラ名を1行1件（`# 以降`はコメント）
 #   .extras-stamp    経路ごとの更新印
 # キットは規約だけを知り、中身には関知しない。
+#
+# installers はキットが hooks の登録方法を知らずに済ませるための口。
+# 「どのイベントに登録するか」は配布物自身が知っているので、キットは --install を呼ぶだけ。
+# auto-install のたびに --install が走るため、インストーラは冪等でなければならない。
+#
+# インストーラは実行前に $EXTRAS_INSTALLERS_DIR/<route>/ に複製し、複製側から実行する。
+# 撤去時（deprecated 掲載時）には経路からファイルが消えているため、
+# --uninstall を呼ぶには手元にコピーが要る。registry 側に chmod せずに済む利点もある。
+#
+# 権限について: installers は任意コードを実行するが、wrapper の auto-install は既に
+# registry 内の setup_global.sh 自身を無条件で実行している。registry に書き込める者は
+# その時点で全ホストで任意コードを実行でき、installers はその能力を規約の形に整理するだけ。
 
-# deprecated ファイルからスキル名を読み出す（コメント・空行を除去）
+# deprecated ファイルから名前を読み出す（コメント・空行を除去）
 read_deprecated_names() {
     local file="$1"
     [[ -f "$file" ]] || return 0
     sed -e 's/#.*//' -e 's/[[:space:]]//g' "$file" | grep -v '^$' || true
 }
 
+# インストーラを手元に複製してから --install で呼ぶ
+install_extras_installer() {
+    local route="$1" src="$2"
+    local name kept
+    name=$(basename "$src")
+    kept="$EXTRAS_INSTALLERS_DIR/$route/$name"
+
+    mkdir -p "$EXTRAS_INSTALLERS_DIR/$route"
+    cp "$src" "$kept"
+    chmod +x "$kept"
+
+    info "  インストーラ: $name"
+    if ! "$kept" --install; then
+        warn "  インストーラの実行に失敗: $name"
+    fi
+}
+
+# 手元に複製したインストーラを --uninstall で呼んで撤去する（該当なしなら何もしない）
+uninstall_extras_installer() {
+    local route="$1" name="$2"
+    local kept="$EXTRAS_INSTALLERS_DIR/$route/$name"
+
+    [[ -f "$kept" ]] || return 0
+
+    info "  インストーラを撤去: $name"
+    if "$kept" --uninstall; then
+        rm -f "$kept"
+    else
+        # 複製を残して次回リトライさせる
+        warn "  インストーラの撤去に失敗: $name"
+    fi
+}
+
 install_extras() {
     [[ -d "$EXTRAS_DIR" ]] || return 0
 
-    local route_dir route name skill_dir found=0
+    local route_dir route name skill_dir installer found=0
     for route_dir in "$EXTRAS_DIR"/*/; do
         [[ -d "$route_dir" ]] || continue
         route=$(basename "$route_dir")
@@ -128,13 +176,22 @@ install_extras() {
 
         # 墓標の処理はインストールより先に行う
         # （同名スキルが復活した場合にインストール側が勝つようにするため）
+        # 名前はスキルとインストーラで共通の平坦リスト。
+        # 該当しない側は何もしない no-op になるので、両方に撤去を試みる。
         while read -r name; do
             "$SCRIPT_DIR/install-skill.sh" --uninstall "$name"
+            uninstall_extras_installer "$route" "$name"
         done < <(read_deprecated_names "$route_dir/deprecated")
 
         for skill_dir in "$route_dir"skills/*/; do
             if [[ -d "$skill_dir" ]]; then
                 "$SCRIPT_DIR/install-skill.sh" "$skill_dir"
+            fi
+        done
+
+        for installer in "$route_dir"installers/*; do
+            if [[ -f "$installer" ]]; then
+                install_extras_installer "$route" "$installer"
             fi
         done
 
@@ -147,9 +204,10 @@ install_extras() {
 }
 
 uninstall_extras() {
-    [[ -d "$EXTRAS_DIR" ]] || return 0
+    # 経路が消えていても手元の複製は掃除する
+    [[ -d "$EXTRAS_DIR" || -d "$EXTRAS_INSTALLERS_DIR" ]] || return 0
 
-    local route_dir skill_dir name
+    local route_dir route skill_dir kept_dir kept name
     for route_dir in "$EXTRAS_DIR"/*/; do
         [[ -d "$route_dir" ]] || continue
         for skill_dir in "$route_dir"skills/*/; do
@@ -161,13 +219,25 @@ uninstall_extras() {
             fi
         done
     done
-    rm -rf "$EXTRAS_STAMP_DIR"
+
+    # インストーラは経路ではなく手元の複製を辿る
+    # （経路から消えた後も撤去できるようにするため）
+    for kept_dir in "$EXTRAS_INSTALLERS_DIR"/*/; do
+        [[ -d "$kept_dir" ]] || continue
+        route=$(basename "$kept_dir")
+        for kept in "$kept_dir"*; do
+            [[ -f "$kept" ]] || continue
+            uninstall_extras_installer "$route" "$(basename "$kept")"
+        done
+    done
+
+    rm -rf "$EXTRAS_STAMP_DIR" "$EXTRAS_INSTALLERS_DIR"
 }
 
 status_extras() {
     [[ -d "$EXTRAS_DIR" ]] || return 0
 
-    local route_dir route skill_dir name found=0
+    local route_dir route skill_dir installer name found=0
     for route_dir in "$EXTRAS_DIR"/*/; do
         [[ -d "$route_dir" ]] || continue
         route=$(basename "$route_dir")
@@ -186,6 +256,19 @@ status_extras() {
                     echo "    ✓ $name"
                 else
                     echo "    ✗ $name (未インストール)"
+                fi
+            fi
+        done
+
+        # インストーラは手元に複製があるかどうかで判定する。
+        # 個々の --status は出力が長いので呼ばない（詳細は各インストーラを直接叩く）
+        for installer in "$route_dir"installers/*; do
+            if [[ -f "$installer" ]]; then
+                name=$(basename "$installer")
+                if [[ -f "$EXTRAS_INSTALLERS_DIR/$route/$name" ]]; then
+                    echo "    ✓ $name (installer)"
+                else
+                    echo "    ✗ $name (installer, 未インストール)"
                 fi
             fi
         done
@@ -249,8 +332,26 @@ do_install() {
 
     # 3. statusline.sh をコピー
     info "Status Line をインストール中..."
-    cp "$SCRIPT_DIR/global.claude/statusline.sh" "$CLAUDE_DIR/"
-    chmod +x "$CLAUDE_DIR/statusline.sh"
+    # statusline は描画のたびに起動されるため、実行中の bash を壊さないよう tmp → mv で置き換える
+    install_atomic() {
+        local src=$1 dst=$2 mode=$3
+        local tmp
+        tmp="$(dirname "$dst")/.$(basename "$dst").tmp.$$"
+        cp "$src" "$tmp" && chmod "$mode" "$tmp" && mv -f "$tmp" "$dst"
+    }
+    install_atomic "$SCRIPT_DIR/global.claude/statusline.sh" "$CLAUDE_DIR/statusline.sh" 755
+
+    # 部品: kit/ はキットが管理（同梱にないものは削除）。segments/ と sinks/ は外部の登録先なので作るだけで中身に触れない
+    local sl_d="$CLAUDE_DIR/statusline.d"
+    mkdir -p "$sl_d/kit" "$sl_d/segments" "$sl_d/sinks"
+    local part
+    for part in "$SCRIPT_DIR/global.claude/statusline.d/kit"/*.sh; do
+        if [[ -f "$part" ]]; then install_atomic "$part" "$sl_d/kit/$(basename "$part")" 644; fi
+    done
+    for part in "$sl_d/kit"/*.sh; do
+        [[ -f "$part" ]] || continue
+        [[ -f "$SCRIPT_DIR/global.claude/statusline.d/kit/$(basename "$part")" ]] || rm -f "$part"
+    done
 
     # 4. claude-code ラッパーをインストール（osc-tap がある場合のみ）
     if command -v osc-tap >/dev/null 2>&1; then
@@ -267,10 +368,24 @@ do_install() {
         warn "osc-tap 未インストールのため claude-code ラッパーはスキップしました"
     fi
 
-    # 5. build_startup_context.py をインストール
-    info "build_startup_context.py をインストール中..."
+    # 5. scripts をインストール
+    info "scripts をインストール中..."
     mkdir -p "$CLAUDE_DIR/scripts"
     cp "$SCRIPT_DIR/scripts/build_startup_context.py" "$CLAUDE_DIR/scripts/"
+    # 保守用ツール。check_registry_health.py は同じディレクトリの
+    # check_journal_links.sh を呼ぶので、2つは必ず同じ場所に置く
+    cp "$SCRIPT_DIR/scripts/check_registry_health.py" "$CLAUDE_DIR/scripts/"
+    chmod +x "$CLAUDE_DIR/scripts/check_registry_health.py"
+    cp "$SCRIPT_DIR/scripts/check_journal_links.sh" "$CLAUDE_DIR/scripts/"
+    chmod +x "$CLAUDE_DIR/scripts/check_journal_links.sh"
+    # キット関連ファイルの .git/info/exclude 登録と追跡解除。
+    # persona-setup の init-project.sh がこのパスを呼ぶ
+    cp "$SCRIPT_DIR/scripts/setup_git_exclude.sh" "$CLAUDE_DIR/scripts/"
+    chmod +x "$CLAUDE_DIR/scripts/setup_git_exclude.sh"
+    # Ubuntu 26.04 以降の bwrap AppArmor 手当て。bootstrap.sh が呼ぶほか、
+    # 既設 PC では手で一度実行する（sudo を求めるため auto-install からは呼ばない）
+    cp "$SCRIPT_DIR/scripts/setup_bwrap_apparmor.sh" "$CLAUDE_DIR/scripts/"
+    chmod +x "$CLAUDE_DIR/scripts/setup_bwrap_apparmor.sh"
 
     # 6. グローバルルール移行チェック
     # global_rules.md はグローバル KB (registry/<host>/kb/) に統合済み。
@@ -308,7 +423,24 @@ do_install() {
         "Edit(/reports/ideas/**)",
         "Edit(/reports/todos/**)",
         "Edit(/reports/insight/**)",
-        "Edit(/reports/jobs/**)"
+        "Edit(/reports/jobs/**)",
+        "Bash(~/.claude/scripts/check_registry_health.py:*)",
+        "Bash(~/.claude/scripts/check_journal_links.sh:*)",
+        "Bash(~/.claude/scripts/setup_git_exclude.sh:*)",
+        "Bash(~/.claude/scripts/setup_bwrap_apparmor.sh --status)"
+    ]'
+
+    # sandbox から除外するコマンド
+    # 保守用ツールは registry / journals に書き込むため sandbox 内では動かない。
+    # excludedCommands で sandbox 外に出し、あわせて allow にも入れる
+    # （sandbox 外のコマンドは autoAllowBashIfSandboxed の自動許可から外れるため、
+    #   headless の insight から呼ぶには明示的な許可が要る）
+    # setup_git_exclude.sh は worktree から呼ぶと本体側の .git/ に書くため
+    # プロジェクトルート外への書き込みになる。同じく sandbox 外に出す
+    local excluded='[
+        "*check_registry_health.py*",
+        "*check_journal_links.sh*",
+        "*setup_git_exclude.sh*"
     ]'
 
     # 無効な Write(path) ルールの掃除
@@ -326,6 +458,7 @@ do_install() {
     # settings.json を更新
     local tmp=$(mktemp)
     jq --argjson perms "$permissions" \
+       --argjson excluded "$excluded" \
        --arg hook_end_cmd "$HOOKS_DIR/session_end.sh" \
        --arg hook_memory_cmd "$HOOKS_DIR/process_memory_drafts.sh" \
        --arg hook_start_cmd "$HOOKS_DIR/session_start.sh" \
@@ -335,6 +468,10 @@ do_install() {
         .permissions.allow = (
             ((.permissions.allow // []) | map(select((type == "string" and startswith("Write(")) | not)))
             + $perms | unique
+        ) |
+        # sandbox の excludedCommands をマージ（既存エントリは保持）
+        .sandbox.excludedCommands = (
+            (.sandbox.excludedCommands // []) + $excluded | unique
         ) |
         # SessionEnd hook をマージ（既存エントリを保持、自分の hook は追加/更新）
         .hooks.SessionEnd = (
@@ -404,6 +541,11 @@ do_uninstall() {
     if [[ -f "$CLAUDE_DIR/statusline.sh" ]]; then
         info "Status Line を削除中..."
         rm "$CLAUDE_DIR/statusline.sh"
+    fi
+    # 部品はキット管理の kit/ だけ消す。segments/ と sinks/ は外部の登録物なので、空のときだけ片付ける
+    if [[ -d "$CLAUDE_DIR/statusline.d" ]]; then
+        rm -rf "$CLAUDE_DIR/statusline.d/kit"
+        rmdir "$CLAUDE_DIR/statusline.d/segments" "$CLAUDE_DIR/statusline.d/sinks" "$CLAUDE_DIR/statusline.d" 2>/dev/null || true
     fi
 
     # claude-code ラッパーを削除

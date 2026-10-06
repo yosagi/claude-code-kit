@@ -22,6 +22,10 @@ allowed-tools: Bash(~/.claude/skills/work-logger/get_session_info.sh:*), Bash(~/
 
 ## 手順
 
+**スクリプトの呼び出し方**: 以下のスクリプト（`get_journal_date.sh` / `session_end.sh --prepare` / `submit_draft.sh`）は、
+それぞれ単独の Bash 呼び出しで実行する。`cd`・パイプ・リダイレクト・`;`・`&&` と連結しない。
+連結するとコマンド全体が excludedCommands に合致せず sandbox 内で走り、drafts や registry への書き込みで失敗する。
+
 ### 1. 日付の決定
 
 ```bash

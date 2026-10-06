@@ -17,13 +17,15 @@ allowed-tools: Bash(~/.claude/skills/inbox-send/inbox-send.sh:*), Bash(~/.claude
 
 ## 処理手順
 
-### 1. プロジェクトルートに移動
+**スクリプトの呼び出し方**: このスキルのスクリプト（`find-project.sh` / `inbox-send.sh` / `inbox-dispatch.sh`）は、
+それぞれ単独の Bash 呼び出しで実行する。`cd`・パイプ・リダイレクト・`;`・`&&` と連結しない。
+連結するとコマンド全体が excludedCommands に合致せず sandbox 内で走り、相手プロジェクトへの書き込みで失敗する。
 
-```bash
-cd /path/to/project/root
-```
+### 1. プロジェクトルートを確認
 
-サブディレクトリにいると draft やファイルを間違った場所に作成してしまう。
+プロジェクトルートはシステムプロンプトの「Primary working directory」の値。`cd` はしない。
+draft ファイルはこのルート基準の `reports/draft/` に Write ツール（絶対パス）で作成し、
+`inbox-send.sh` には `-C` でルートを渡す（スクリプトが自分で移動する）。
 
 ### 2. 依頼内容をユーザーと相談
 
@@ -61,7 +63,7 @@ cd /path/to/project/root
 ### 5. 依頼を送信
 
 ```bash
-~/.claude/skills/inbox-send/inbox-send.sh [送信先] [draft ファイル] [送信元名] [日付]
+~/.claude/skills/inbox-send/inbox-send.sh -C [プロジェクトルート] [送信先] [draft ファイル] [送信元名] [日付]
 ```
 
 出力から送信されたファイル名を取得する（例: `2026-02-05_from_claude_topic.md`）

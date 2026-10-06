@@ -6,8 +6,17 @@
 # Usage: update-extras.sh <route-name> <source-dir>
 #
 #   <route-name>  配布経路の名前。配布元がわかる名前にする（例: claude-dist-skills）
-#   <source-dir>  スキルディレクトリを並べたディレクトリ。
-#                 直下に `deprecated` ファイルがあれば廃止リストとして一緒に配信する
+#   <source-dir>  配布物を並べたディレクトリ。次の2つの形式を受け付ける:
+#
+#                 構造化レイアウト（直下に skills/ または installers/ がある）
+#                   skills/<name>/   スキル本体
+#                   installers/<f>   自分をインストールする実行ファイル
+#                                    （--install / --uninstall を受け、冪等であること）
+#                 従来形式（どちらも無い）
+#                   直下のディレクトリをすべてスキルとして扱う
+#
+#                 どちらの形式でも、直下に `deprecated` ファイルがあれば
+#                 廃止リストとして一緒に配信する
 #
 # キットは dist-extras の「規約」だけを知り、中身には関知しない。
 # 実行後、他PCでは claude-code 起動時に auto-install が発火して反映される。
@@ -56,10 +65,29 @@ if [[ ! -x "$REGISTRY_DIST/setup_global.sh" ]]; then
     exit 1
 fi
 
-# スキル本体を配置（deprecated は skills/ の中には送らない）
-info "$SRC_ABS/ → $ROUTE_DIR/skills/"
-mkdir -p "$ROUTE_DIR/skills"
-rsync -a --delete --exclude='deprecated' "$SRC_ABS/" "$ROUTE_DIR/skills/"
+# 配布物を配置（deprecated は skills/ の中には送らない）
+# 構造化レイアウトかどうかは、直下に skills/ か installers/ があるかで判定する
+sync_subdir() {
+    local sub="$1"
+    if [[ -d "$SRC_ABS/$sub" ]]; then
+        info "$SRC_ABS/$sub/ → $ROUTE_DIR/$sub/"
+        mkdir -p "$ROUTE_DIR/$sub"
+        rsync -a --delete "$SRC_ABS/$sub/" "$ROUTE_DIR/$sub/"
+    else
+        # 経路から取り除く（配布をやめた場合）
+        rm -rf "${ROUTE_DIR:?}/$sub"
+    fi
+}
+
+if [[ -d "$SRC_ABS/skills" || -d "$SRC_ABS/installers" ]]; then
+    sync_subdir skills
+    sync_subdir installers
+else
+    info "$SRC_ABS/ → $ROUTE_DIR/skills/"
+    mkdir -p "$ROUTE_DIR/skills"
+    rsync -a --delete --exclude='deprecated' "$SRC_ABS/" "$ROUTE_DIR/skills/"
+    rm -rf "${ROUTE_DIR:?}/installers"
+fi
 
 # 廃止リストを配置（無ければ経路から取り除く）
 if [[ -f "$SRC_ABS/deprecated" ]]; then
